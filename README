@@ -1,0 +1,14 @@
+AiO Dreambox Screengrabber v0.8
+
+written 2006 - 2008 by Seddi
+Contact: seddi@ihad.tv / http://www.ihad.tv
+
+
+Only tested with compiling inside OE so far, dont know if it smoothly works
+inside the tuxbox CDK.
+
+The source works on all ppc, xilleon and broadcom based Dreamboxes.
+
+ATTENTION FOR DREAM 8000 !!!
+Dont use this tool with drivers build before 2008/12/01 otherwise it will
+freeze your dreambox.
