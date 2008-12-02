@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
 				printf("-v only grab video\n");
 				printf("-d always use osd resolution (good for skinshots)\n");
 				printf("-n dont correct 16:9 aspect ratio\n");
-				printf("-r (size) resize to to a fixed width, maximum: 1920\n");
+				printf("-r (size) resize to a fixed width, maximum: 1920\n");
 				printf("-l always 4:3, create letterbox if 16:9\n");
 				printf("-b use bicubic picture resize (slow but smooth)\n");
 				printf("-j (quality) produce jpg files instead of bmp (quality 0-100)\n");	
