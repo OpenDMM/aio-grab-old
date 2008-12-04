@@ -449,13 +449,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		
 		res=575;
 		
-		// wait till we get a useful picture
-		while (res == 1079 || res == 575 || res == 479) 
-		{
-			memcpy(data,memory,100); 
-			res=data[0x19]<<8|data[0x18];
-		}
-
+		memcpy(data,memory,100); 
+		res=data[0x19]<<8|data[0x18];
 		stride=data[0x15]<<8|data[0x14];	
 		ofs=(data[0x28]<<8|data[0x27])>>4;
 		ofs2=(data[0x2c]<<8|data[0x2b])>>4;
