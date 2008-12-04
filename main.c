@@ -444,24 +444,29 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 
 		unsigned char data[100];
 
-		int adr,adr2,ofs,ofs2,offset;
+		int adr,adr2,ofs,ofs2,offset/*,vert_start,vert_end*/;
 		int xtmp,xsub,ytmp,t2,dat1;
 		
-		res=575;
-		
 		memcpy(data,memory,100); 
-		res=data[0x19]<<8|data[0x18];
+		//vert_start=data[0x1B]<<8|data[0x1A];
+		//vert_end=data[0x19]<<8|data[0x18];
 		stride=data[0x15]<<8|data[0x14];	
 		ofs=(data[0x28]<<8|data[0x27])>>4;
 		ofs2=(data[0x2c]<<8|data[0x2b])>>4;
-		adr=data[0x1f]<<24|data[0x1e]<<16|data[0x1d]<<8|data[0x1c];
-		adr2=data[0x23]<<24|data[0x22]<<16|data[0x21]<<8|data[0x20];
+		adr=(data[0x1f]<<24|data[0x1e]<<16|data[0x1d]<<8|data[0x1c])&0xFFFFFF00;
+		adr2=(data[0x23]<<24|data[0x22]<<16|data[0x21]<<8|data[0x20])&0xFFFFFF00;
 		offset=adr2-adr;
-			
+		
 		munmap(memory, 100);
 
 		// printf("Stride: %d Res: %d\n",stride,res);
 		// printf("Adr: %X Adr2: %X OFS: %d %d\n",adr,adr2,ofs,ofs2);
+
+		pipe=popen("cat /proc/stb/vmpeg/0/yres","r");
+		while (fgets(buf,sizeof(buf),pipe))
+			sscanf(buf,"%x",&res); 
+		pclose(pipe);
+
 		
 		luma = (unsigned char *)malloc(stride*(ofs));
 		chroma = (unsigned char *)malloc(stride*(ofs2+64));	
@@ -520,7 +525,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 				mem_dma[1] = /* FIRST_DESCRIPTOR */ SPARE_RAM;
 				mem_dma[3] = /* DMA WAKE CTRL */ 3;
 				mem_dma[2] = 1;
-				while (mem_dma[5] == 1);
+				while (mem_dma[5] == 1)
+					usleep(2);
 				mem_dma[2] = 0;
 		
 				memcpy(memory_tmp + i, memory + 0x1000, tmp_len);
@@ -715,18 +721,6 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		if (set2 == 0)
 			t-=stride;
 		set2^=1;
-	}
-	
-	// correct yres if neccesary
-	if (stb_type == BRCM7401 || stb_type == BRCM4380)
-	{
-		int yres_tmp;
-		pipe=popen("cat /proc/stb/vmpeg/0/yres","r");
-		while (fgets(buf,sizeof(buf),pipe))
-			sscanf(buf,"%x",&yres_tmp); 
-		pclose(pipe);
-		memset(video+(res+1)*stride*3,0,(yres_tmp-res)*stride);
-		res=yres_tmp;
 	}
 	
 	*xres=stride;
