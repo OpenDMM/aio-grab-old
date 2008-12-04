@@ -43,7 +43,7 @@ Feel free to use the code for your own projects. See LICENSE file for details.
 #include "jpeglib.h"
 
 #define CLAMP(x)    ((x < 0) ? 0 : ((x > 255) ? 255 : x))
-#define SWAP(x,y) 	x^=(y^=(x^=y))
+#define SWAP(x,y)	{ x ^= y; y ^= x; x ^= y; }
 
 #define RED565(x)    ((((x) >> (11 )) & 0x1f) << 3)
 #define GREEN565(x)  ((((x) >> (5 )) & 0x3f) << 2)
