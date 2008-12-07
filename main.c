@@ -90,11 +90,7 @@ int main(int argc, char **argv) {
 	aspect=1;
 	
 	unsigned char *video, *osd, *osd_alpha, *output;
-	video = (unsigned char *)malloc(1920*1080*3);
-	osd = (unsigned char *)malloc(1920*1080*3);	
-	osd_alpha = (unsigned char *)malloc(1920*1080);	
-	output = (unsigned char *)malloc(1920*1080*3);
-	
+
 	char filename[256];
 	sprintf(filename,"/tmp/screenshot.bmp");
 	
@@ -196,6 +192,18 @@ int main(int argc, char **argv) {
 	if (optind < argc) // filename
 		sprintf(filename,"%s",argv[optind]);
 
+	int mallocsize=1920*1080;
+	if (stb_type == VULCAN || stb_type == PALLAS)
+		mallocsize=720*576;
+	
+	video = (unsigned char *)malloc(mallocsize*3);
+	osd = (unsigned char *)malloc(mallocsize*3);	
+	osd_alpha = (unsigned char *)malloc(mallocsize);	
+
+	if ((stb_type == VULCAN || stb_type == PALLAS) && width)
+		mallocsize=width*(width/1.33);
+	
+	output = (unsigned char *)malloc(mallocsize*3);
 
 	// get osd
 	if (!video_only)
@@ -284,8 +292,8 @@ int main(int argc, char **argv) {
 	if (!no_aspect && aspect == 3 && ((float)xres/(float)yres)<1.5)
 	{
 		printf("Correct aspect ratio to 16:9 ...\n");
-		resize(output,video,xres,yres,xres,yres/1.33,3);
-		yres/=1.33;
+		resize(output,video,xres,yres,xres,yres/1.42,3);
+		yres/=1.42;
 		memcpy(output,video,xres*yres*3);
 	}
 	
@@ -761,7 +769,6 @@ void getosd(unsigned char *osd, unsigned char *osd_alpha, int *xres, int *yres)
 		printf("Framebuffer: <FBIOGET_VSCREENINFO failed>\n");
 		return;
 	}
-
 	
 	if(!(lfb = (unsigned char*)mmap(0, fix_screeninfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0)))
 	{
