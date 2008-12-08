@@ -200,7 +200,7 @@ int main(int argc, char **argv) {
 	osd = (unsigned char *)malloc(mallocsize*3);	
 	osd_alpha = (unsigned char *)malloc(mallocsize);	
 
-	if ((stb_type == VULCAN || stb_type == PALLAS) && width)
+	if ((stb_type == VULCAN || stb_type == PALLAS) && width > 720)
 		mallocsize=width*(width/1.33);
 	
 	output = (unsigned char *)malloc(mallocsize*3);
