@@ -907,9 +907,7 @@ void getosd(unsigned char *osd, unsigned char *osd_alpha, int *xres, int *yres)
 
 void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors)
 {
-	
-	float fx,fy,tmp_f/*,dpixel*/;
-	unsigned int xs,ys,xd,yd,dpixel;
+	unsigned int xs,ys,xd,yd,dpixel,fx,fy;
 	unsigned int c,tmp_i;
 	int x,y,t,t1;
 	xs=xsource; // x-resolution source
@@ -917,11 +915,11 @@ void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int 
 	xd=xdest; // x-resolution destination
 	yd=ydest; // y-resolution destination
 	
-	// get x scale factor
-	fx=(float)(xs-1)/(float)xd;
+	// get x scale factor, use bitshifting to get rid of floats
+	fx=((xs-1)<<16)/xd;
 
-	// get y scale factor
-	fy=(float)(ys-1)/(float)yd;
+	// get y scale factor, use bitshifting to get rid of floats
+	fy=((ys-1)<<16)/yd;
 
 	unsigned int sx1[xd],sx2[xd],sy1,sy2;
 	
@@ -929,13 +927,12 @@ void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int 
 	for (x=0; x<xd; x++) 
 	{
 		// first x source pixel for calculating destination pixel
-		tmp_f=fx*(float)x;
-		sx1[x]=(int)tmp_f; //floor()
+		sx1[x]=(fx*x)>>16; //floor()
 
 		// last x source pixel for calculating destination pixel
-		tmp_f=(float)sx1[x]+fx;
-		sx2[x]=(int)tmp_f;
-		if ((float)sx2[x] < tmp_f) {sx2[x]+=1;} //ceil()		
+		sx2[x]=sx1[x]+(fx>>16);
+		if (fx & 0x7FFF) //ceil()
+			sx2[x]++;		
 	}
 	
 	// Scale
@@ -943,13 +940,12 @@ void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int 
 	{
 
 		// first y source pixel for calculating destination pixel
-		tmp_f=fy*(float)y;
-		sy1=(int)tmp_f; //floor()
+		sy1=(fy*y)>>16; //floor()
 
 		// last y source pixel for calculating destination pixel
-		tmp_f=(float)sy1+fy;
-		sy2=(int)tmp_f;
-		if ((float)sy2 < tmp_f) {sy2+=1;} //ceil()	
+		sy2=sy1+(fy>>16);
+		if (fy & 0x7FFF) //ceil()
+			sy2++;
 
 		for (x=0; x<xd; x++) 
 		{
@@ -968,14 +964,8 @@ void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int 
 						dpixel++;
 					}
 				}
-		
-				//tmp_f=(float)tmp_i/dpixel;
-				//tmp_i=(int)tmp_f;
-				//if ((float)tmp_i+0.5 <= tmp_f) {tmp_i+=1;} //round()
-				tmp_i=tmp_i/dpixel; // working with integers is not correct, but much faster and +-1 inside the color values doesnt really matter
-				
 				// writing calculated pixel into destination pixmap
-				dest[(x*colors)+c+(y*xd*colors)]=tmp_i;
+				dest[(x*colors)+c+(y*xd*colors)]=tmp_i/dpixel;
 			}
 		}
 	}
