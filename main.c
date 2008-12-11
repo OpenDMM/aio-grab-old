@@ -595,8 +595,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			return;
 		}
 		
-		luma = (unsigned char *)malloc(1920*1080);
-		chroma = (unsigned char *)malloc(1920*1080);
+		luma = (unsigned char *)malloc(1920*1152);
+		chroma = (unsigned char *)malloc(1920*576);
 		
 		int offset=1920*1152*5;	// offset for chroma buffer
 		
