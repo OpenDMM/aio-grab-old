@@ -57,7 +57,7 @@ Feel free to use the code for your own projects. See LICENSE file for details.
 #define VIDEO_DEV "/dev/video"
 
 // dont change SPARE_RAM and DMA_BLOCKSIZE until you really know what you are doing !!!
-#define SPARE_RAM 250*1024*1024
+#define SPARE_RAM 252*1024*1024 // the last 4 MB is enough...
 #define DMA_BLOCKSIZE 0x3FF000
 
 void getvideo(unsigned char *video, int *xres, int *yres);
