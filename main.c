@@ -531,7 +531,7 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			for (i=0; i < tmp_size; i += DMA_BLOCKSIZE)
 			{
 				
-				unsigned long *descriptor = memory_tmp;
+				unsigned long *descriptor = (void*)memory_tmp;
 
 				if (i + DMA_BLOCKSIZE > tmp_size)
 					tmp_len = tmp_size - i;
