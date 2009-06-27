@@ -1,7 +1,7 @@
 /* 
-AiO Dreambox Screengrabber v0.81
+AiO Dreambox Screengrabber v0.82
 
-written 2006 - 2008 by Seddi
+written 2006 - 2009 by Seddi
 Contact: seddi@ihad.tv / http://www.ihad.tv
 
 This standalone binary will grab the video-picture convert it from
@@ -24,7 +24,7 @@ the great support.
 Feel free to use the code for your own projects. See LICENSE file for details.
 */
 
-#define GRAB_VERSION "v0.81"
+#define GRAB_VERSION "v0.82"
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -32,6 +32,7 @@ Feel free to use the code for your own projects. See LICENSE file for details.
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <inttypes.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -78,11 +79,11 @@ static const int yuv2rgbtable_bv[256] = {
 };
 
 void getvideo(unsigned char *video, int *xres, int *yres);
-void getosd(unsigned char *osd, unsigned char *osd_alpha, int *xres, int *yres);
+void getosd(unsigned char *osd, int *xres, int *yres);
 void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors);
 void fast_resize(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors);
 void (*resize)(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors);
-void combine(unsigned char *output, unsigned char *video, unsigned char *osd, unsigned char *osd_alpha, int xres, int yres);
+void combine(unsigned char *output, unsigned char *video, unsigned char *osd, int xres, int yres);
 char* upcase(char* mixedstr);
 
 enum {UNKNOWN,PALLAS,VULCAN,XILLEON,BRCM7401,BRCM4380};
@@ -105,8 +106,9 @@ int main(int argc, char **argv) {
 	jpg_quality=50;
 	aspect=1;
 	
-	unsigned char *video, *osd, *osd_alpha, *output;
-
+	unsigned char *video, *osd, *output;
+	int output_bytes=3;
+	
 	char filename[256];
 	sprintf(filename,"/tmp/screenshot.bmp");
 	
@@ -148,7 +150,7 @@ int main(int argc, char **argv) {
 			case '?':
 				printf("Usage: grab [commands] [filename]\n\n");
 				printf("command:\n");
-				printf("-o only grab osd (framebuffer)\n");
+				printf("-o only grab osd (framebuffer) when using this with png or bmp\n   fileformat you will get a 32bit pic with alphachannel\n");
 				printf("-v only grab video\n");
 				printf("-d always use osd resolution (good for skinshots)\n");
 				printf("-n dont correct 16:9 aspect ratio\n");
@@ -213,17 +215,16 @@ int main(int argc, char **argv) {
 		mallocsize=720*576;
 	
 	video = (unsigned char *)malloc(mallocsize*3);
-	osd = (unsigned char *)malloc(mallocsize*3);	
-	osd_alpha = (unsigned char *)malloc(mallocsize);	
+	osd = (unsigned char *)malloc(mallocsize*4);	
 
 	if ((stb_type == VULCAN || stb_type == PALLAS) && width > 720)
 		mallocsize=width*(width * 0.8 + 1);
 	
-	output = (unsigned char *)malloc(mallocsize*3);
+	output = (unsigned char *)malloc(mallocsize*4);
 
 	// get osd
 	if (!video_only)
-		getosd(osd,osd_alpha,&xres_o,&yres_o);
+		getosd(osd,&xres_o,&yres_o);
 	
 	// get video
 	if (!osd_only)
@@ -263,10 +264,8 @@ int main(int argc, char **argv) {
 		{
 			// resize osd to video size
 			printf("Resizing OSD to %d x %d ...\n",xres_v,yres_v);	
-			resize(osd,output,xres_o,yres_o,xres_v,yres_v,3);
-			memcpy(osd,output,xres_v*yres_v*3);
-			resize(osd_alpha,output,xres_o,yres_o,xres_v,yres_v,1);
-			memcpy(osd_alpha,output,xres_v*yres_v);
+			resize(osd,output,xres_o,yres_o,xres_v,yres_v,4);
+			memcpy(osd,output,xres_v*yres_v*4);
 			xres=xres_v;
 			yres=yres_v;
 		} else
@@ -283,13 +282,16 @@ int main(int argc, char **argv) {
 
 	// merge video and osd if neccessary
 	if (osd_only)
-		memcpy(output,osd,xres*yres*3);
+	{
+		memcpy(output,osd,xres*yres*4);
+		output_bytes=4;
+	}
 	else if (video_only)
 		memcpy(output,video,xres*yres*3);
 	else 
 	{
 		printf("Merge Video with Framebuffer ...\n");
-		combine(output,video,osd,osd_alpha,xres,yres);
+		combine(output,video,osd,xres,yres);
 	}
 
 	
@@ -297,10 +299,10 @@ int main(int argc, char **argv) {
 	if (width)
 	{
 		printf("Resizing Screenshot to %d x %d ...\n",width,yres*width/xres);
-		resize(output,video,xres,yres,width,(yres*width/xres),3);
+		resize(output,osd,xres,yres,width,(yres*width/xres),output_bytes);
 		yres=yres*width/xres;
 		xres=width;
-		memcpy(output,video,xres*yres*3);
+		memcpy(output,osd,xres*yres*output_bytes);
 	}
 	
 
@@ -308,9 +310,9 @@ int main(int argc, char **argv) {
 	if (!no_aspect && aspect == 3 && ((float)xres/(float)yres)<1.5)
 	{
 		printf("Correct aspect ratio to 16:9 ...\n");
-		resize(output,video,xres,yres,xres,yres/1.42,3);
+		resize(output,osd,xres,yres,xres,yres/1.42,output_bytes);
 		yres/=1.42;
-		memcpy(output,video,xres*yres*3);
+		memcpy(output,osd,xres*yres*output_bytes);
 	}
 	
 	
@@ -324,16 +326,16 @@ int main(int argc, char **argv) {
 		{
 			int ofs;
 			ofs=(yres_neu-yres)>>1;
-			memmove(output+ofs*xres*3,output,xres*yres*3);
-			memset(output,0,ofs*xres*3);
-			memset(output+ofs*xres*3+xres*yres*3,0,ofs*xres*3);
+			memmove(output+ofs*xres*output_bytes,output,xres*yres*output_bytes);
+			memset(output,0,ofs*xres*output_bytes);
+			memset(output+ofs*xres*3+xres*yres*output_bytes,0,ofs*xres*output_bytes);
 		}
 		yres=yres_neu;
 	}
 	
 	
 	// saving picture
-	printf("Saving %s ...\n",filename);
+	printf("Saving %d bit %s ...\n",(use_jpg?3*8:output_bytes*8),filename);
 	FILE *fd2 = fopen(filename, "wr");
 	
 	
@@ -350,7 +352,7 @@ int main(int argc, char **argv) {
 		PUT16(0); PUT16(0); PUT32(14 + 40);
 		PUT32(40); PUT32(xres); PUT32(yres);
 		PUT16(1);
-		PUT16(24);
+		PUT16(output_bytes*8); // bits
 		PUT32(0); PUT32(0); PUT32(0); PUT32(0); PUT32(0); PUT32(0);
 #undef PUT32
 #undef PUT16
@@ -359,7 +361,7 @@ int main(int argc, char **argv) {
 		
 		int y;
 		for (y=yres-1; y>=0 ; y-=1) {
-			fwrite(output+(y*xres*3),xres*3,1,fd2);
+			fwrite(output+(y*xres*output_bytes),xres*output_bytes,1,fd2);
 		}
 	} else if (use_png)
 	{	
@@ -376,10 +378,10 @@ int main(int argc, char **argv) {
 
 		int y;
 		for (y=0; y<yres; y++)
-			row_pointers[y]=output+(y*xres*3);
+			row_pointers[y]=output+(y*xres*output_bytes);
 		
 		png_set_bgr(png_ptr);
-		png_set_IHDR(png_ptr, info_ptr, xres, yres, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+		png_set_IHDR(png_ptr, info_ptr, xres, yres, 8, ((output_bytes<4)?PNG_COLOR_TYPE_RGB:PNG_COLOR_TYPE_RGBA) , PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
 		png_write_info(png_ptr, info_ptr);
 		png_write_image(png_ptr, row_pointers);
 		png_write_end(png_ptr, info_ptr);
@@ -390,9 +392,23 @@ int main(int argc, char **argv) {
 	{
 		// write jpg
 		int x,y;
-		for (y=0; y<yres; y++)
-			for (x=0; x<xres; x++)
-				SWAP(output[x*3+y*xres*3],output[x*3+y*xres*3+2]);
+		if (output_bytes == 3) // swap bgr<->rgb
+		{
+			for (y=0; y<yres; y++)
+				for (x=0; x<xres; x++)
+						SWAP(output[x*3+y*xres*3],output[x*3+y*xres*3+2]);
+		}
+		else // swap bgr<->rgb and eliminate alpha channel jpgs are always saved with 24bit without alpha channel
+		{
+			for (y=0; y<yres; y++)
+			{
+				for (x=0; x<xres; x++)
+				{
+						memcpy(output+x*3+y*xres*3,output+x*4+y*xres*4,3);
+						SWAP(output[x*3+y*xres*3],output[x*3+y*xres*3+2]);
+				}
+			}
+		}
 
 		struct jpeg_compress_struct cinfo;
 		struct jpeg_error_mgr jerr;
@@ -406,6 +422,7 @@ int main(int argc, char **argv) {
 		cinfo.image_height = yres;
 		cinfo.input_components = 3;	
 		cinfo.in_color_space = JCS_RGB;
+		cinfo.dct_method = JDCT_IFAST;
 		jpeg_set_defaults(&cinfo);
 		jpeg_set_quality(&cinfo,jpg_quality, TRUE);
 		jpeg_start_compress(&cinfo, TRUE);
@@ -427,7 +444,6 @@ int main(int argc, char **argv) {
 	// clean up
 	free(video);
 	free(osd);
-	free(osd_alpha);
 	free(output);
 
 	return 0;
@@ -585,13 +601,14 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		else if (stb_type == BRCM4380)
 			munmap(memory_tmp, DMA_BLOCKSIZE + 0x1000);
 
+		
 		for (t=0; t< stride*ofs;t+=4)
 		{
 			SWAP(luma[t],luma[t+3]);
 			SWAP(luma[t+1],luma[t+2]);
 
 			if (t< stride*(ofs>>1))
-			{
+			{ 
 				SWAP(chroma[t],chroma[t+3]);
 				SWAP(chroma[t+1],chroma[t+2]);			
 			}
@@ -774,7 +791,7 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 
 // grabing the osd picture
 
-void getosd(unsigned char *osd, unsigned char *osd_alpha, int *xres, int *yres)
+void getosd(unsigned char *osd, int *xres, int *yres)
 {
 	int fb,x,y,pos,pos1,pos2,ofs;
 	unsigned char *lfb;
@@ -818,23 +835,20 @@ void getosd(unsigned char *osd, unsigned char *osd_alpha, int *xres, int *yres)
 		pos=pos1=pos2=0;
 		ofs=fix_screeninfo.line_length-(var_screeninfo.xres*4);
 		
-		unsigned char *memory; // use additional buffer to speed up especially when using hd skins
-		memory = (unsigned char *)malloc(fix_screeninfo.line_length*var_screeninfo.yres);
-		memcpy(memory,lfb,fix_screeninfo.line_length*var_screeninfo.yres);
-		
-		for (y=0; y < var_screeninfo.yres; y+=1)
+		if (ofs == 0) // we have no offset ? so do it the easy and fast way
 		{
-			for (x=0; x < var_screeninfo.xres; x+=1)
-			{
-				memcpy(osd+pos1,memory+pos2,3);// bgr
-				pos1+=3;
-				pos2+=3;
-				osd_alpha[pos++]=memory[pos2++];// tr
-			}
-			pos2+=ofs;
+			memcpy(osd,lfb,fix_screeninfo.line_length*var_screeninfo.yres);
 		}
-		
-		free(memory);
+		else // DM7025 have an offset, so we have to do it line for line
+		{
+			unsigned char *memory; // use additional buffer to speed up especially when using hd skins
+			memory = (unsigned char *)malloc(fix_screeninfo.line_length*var_screeninfo.yres);
+			memcpy(memory,lfb,fix_screeninfo.line_length*var_screeninfo.yres);
+			printf("%d\n",ofs);
+			for (y=0; y < var_screeninfo.yres; y+=1)
+				memcpy(osd+y*var_screeninfo.xres*4,memory+y*fix_screeninfo.line_length,var_screeninfo.xres*4);
+			free(memory);
+		}
 	} else if ( var_screeninfo.bits_per_pixel == 16 )
 	{
 		printf("Grabbing 16bit Framebuffer ...\n");
@@ -853,7 +867,7 @@ void getosd(unsigned char *osd, unsigned char *osd_alpha, int *xres, int *yres)
 				osd[pos1++] = BLUE565(color); // b
 				osd[pos1++] = GREEN565(color); // g
 				osd[pos1++] = RED565(color); // r
-				osd_alpha[pos++]=0x00; // tr - there is no transparency in 16bit mode
+				osd[pos1++]=0x00; // tr - there is no transparency in 16bit mode
 			}
 			pos2+=ofs;
 		} 
@@ -931,7 +945,7 @@ void getosd(unsigned char *osd, unsigned char *osd_alpha, int *xres, int *yres)
 				osd[pos1++] = bl[color]; // b
 				osd[pos1++] = gn[color]; // g
 				osd[pos1++] = rd[color]; // r
-				osd_alpha[pos++] = tr[color]; // tr
+				osd[pos1++] = tr[color]; // tr
 			}
 			pos2+=ofs;
 		} 
@@ -1018,35 +1032,39 @@ void fast_resize(unsigned char *source, unsigned char *dest, int xsource, int ys
     int x_ratio = (int)((xsource<<16)/xdest) ;
     int y_ratio = (int)((ysource<<16)/ydest) ;
 
-	int x2, y2, c, i ,j;
-    for (i=0;i<ydest;i++) {
-        for (j=0;j<xdest;j++) {
+	int x2, y2, c, i ,j, y2_xsource, i_xdest, y2_x2_colors, i_x_colors;
+    for (i=0;i<ydest;i++) 
+	{
+		y2_xsource = ((i*y_ratio)>>16)*xsource; // do some precalculations
+		i_xdest = i*xdest;
+        for (j=0;j<xdest;j++) 
+		{
             x2 = ((j*x_ratio)>>16) ;
-            y2 = ((i*y_ratio)>>16) ;
+			y2_x2_colors = (y2_xsource+x2)*colors;
+			i_x_colors = (i_xdest+j)*colors;
             for (c=0; c<colors; c++)
-				dest[((i*xdest)+j)*colors + c] = source[((y2*xsource)+x2)*colors + c] ;
+				dest[i_x_colors + c] = source[y2_x2_colors + c] ;
         }                
     }          
 }
 
 // combining pixmaps by using an alphamap
 
-void combine(unsigned char *output, unsigned char *video, unsigned char *osd, unsigned char *osd_alpha, int xres, int yres)
+void combine(unsigned char *output, unsigned char *video, unsigned char *osd, int xres, int yres)
 {
-	int x,y,pos,pos1;
+	int x,y,apos,a2,pos1,vpos1;
 	
-	pos=pos1=0;
+	apos=pos1=vpos1=0;
 	for (y=0; y < yres; y+=1)
 	{
 		for (x=0; x < xres; x+=1)
 		{
-			output[pos1] =  ( ( video[pos1] * ( 0xFF-osd_alpha[pos] ) ) + ( osd[pos1] * osd_alpha[pos] ) ) >>8;
-			pos1++;
-			output[pos1] =  ( ( video[pos1] * ( 0xFF-osd_alpha[pos] ) ) + ( osd[pos1] * osd_alpha[pos] ) ) >>8;
-			pos1++;
-			output[pos1] =  ( ( video[pos1] * ( 0xFF-osd_alpha[pos] ) ) + ( osd[pos1] * osd_alpha[pos] ) ) >>8;
-			pos1++;
-			pos++;
+			apos=pos1+3;
+			a2=0xFF-osd[apos];
+			output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+			output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+			output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+			pos1++; // skip alpha byte
 		}
 	}
 }
