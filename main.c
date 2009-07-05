@@ -391,21 +391,31 @@ int main(int argc, char **argv) {
 	} else 
 	{
 		// write jpg
-		int x,y;
+		int x,y,xres1,xres2,x2;
 		if (output_bytes == 3) // swap bgr<->rgb
 		{
 			for (y=0; y<yres; y++)
+			{
+				xres1=y*xres*3;
+				xres2=xres1+2;
 				for (x=0; x<xres; x++)
-						SWAP(output[x*3+y*xres*3],output[x*3+y*xres*3+2]);
+				{
+					x2=x*3;
+					SWAP(output[x2+xres1],output[x2+xres2]);
+				}
+			}
 		}
 		else // swap bgr<->rgb and eliminate alpha channel jpgs are always saved with 24bit without alpha channel
 		{
 			for (y=0; y<yres; y++)
 			{
+				xres1=y*xres*3;
+				xres2=xres1+2;				
 				for (x=0; x<xres; x++)
 				{
-						memcpy(output+x*3+y*xres*3,output+x*4+y*xres*4,3);
-						SWAP(output[x*3+y*xres*3],output[x*3+y*xres*3+2]);
+					x2=x*3;
+					memcpy(output+x2+xres1,output+x*4+y*xres*4,3);
+					SWAP(output[x2+xres1],output[x2+xres2]);
 				}
 			}
 		}
@@ -575,6 +585,7 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		
 		t=t2=dat1=0;
 		xsub=64;
+ 		int sw=1;
 
 		// decode luma & chroma plane or lets say sort it
 		for (xtmp=0; xtmp < stride; xtmp+=64)
@@ -583,14 +594,25 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 				xsub=stride-xtmp;
 
 			dat1=xtmp;
+			sw=1;
 			for (ytmp = 0; ytmp < ofs; ytmp++) 
 			{
 				memcpy(luma+dat1,memory_tmp+t,xsub); // luma
 				t+=64;
-				if (ytmp < ofs2)
+				
+				//if (ytmp < ofs2)
+				switch (ofs2-ytmp)
 				{
-					memcpy(chroma+dat1,memory_tmp+offset+t2,xsub); // chroma
-					t2+=64;			
+					case 0:
+						sw=0;
+						break;
+				}
+				switch (sw)
+				{
+					case 1:
+						memcpy(chroma+dat1,memory_tmp+offset+t2,xsub); // chroma
+						t2+=64;
+						break;
 				}
 				dat1+=stride;
 			}
@@ -722,7 +744,6 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 
 	close(mem_fd);	
 	
-	
 	int Y, U, V, y ,x, out1, pos, RU, GU, GV, BV, rgbstride;
 	Y=U=V=0;
 		
@@ -731,9 +752,9 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 	out1=pos=t=0;
 	rgbstride=stride*3;
 	
-	for (y=0; y < res; y+=2)
+	for (y=res; y != 0; y-=2)
 	{
-		for (x=0; x < stride; x+=2)
+		for (x=stride; x != 0; x-=2)
 		{
 			U=chroma[t++];
 			V=chroma[t++];
@@ -743,8 +764,12 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			GV=yuv2rgbtable_gv[V];
 			BV=yuv2rgbtable_bv[V];
 			
-			if (stb_type == XILLEON) //on xilleon we use bgr instead of rgb so simply swap the coeffs
-				SWAP(RU,BV);
+			switch (stb_type) //on xilleon we use bgr instead of rgb so simply swap the coeffs
+			{
+				case XILLEON:
+					SWAP(RU,BV);
+					break;
+			}
 
 			// now we do 4 pixels on each iteration this is more code but much faster 
 			Y=yuv2rgbtable_y[luma[pos]]; 
@@ -781,7 +806,7 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		pos+=stride;
 
 	}
-	
+
 	*xres=stride;
 	*yres=res;
 	printf("... Video-Size: %d x %d\n",*xres,*yres);
@@ -1052,20 +1077,17 @@ void fast_resize(unsigned char *source, unsigned char *dest, int xsource, int ys
 
 void combine(unsigned char *output, unsigned char *video, unsigned char *osd, int xres, int yres)
 {
-	int x,y,apos,a2,pos1,vpos1;
+	int a,apos,a2,pos1,vpos1;
 	
 	apos=pos1=vpos1=0;
-	for (y=0; y < yres; y+=1)
-	{
-		for (x=0; x < xres; x+=1)
-		{
-			apos=pos1+3;
-			a2=0xFF-osd[apos];
-			output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-			output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-			output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-			pos1++; // skip alpha byte
-		}
+	for (a=xres*yres; a != 0; a--)
+	{	
+		apos=pos1+3;
+		a2=0xFF-osd[apos];
+		output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+		output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+		output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+		pos1++; // skip alpha byte
 	}
 }
 
