@@ -600,8 +600,7 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 				memcpy(luma+dat1,memory_tmp+t,xsub); // luma
 				t+=64;
 				
-				//if (ytmp < ofs2)
-				switch (ofs2-ytmp)
+				switch (ofs2-ytmp) // the two switch commands are much faster than one if statement
 				{
 					case 0:
 						sw=0;
