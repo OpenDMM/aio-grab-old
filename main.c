@@ -1,12 +1,12 @@
-/* 
-AiO Dreambox Screengrabber v0.82
+/*
+AiO Dreambox Screengrabber v0.83
 
 written 2006 - 2009 by Seddi
 Contact: seddi@ihad.tv / http://www.ihad.tv
 
 This standalone binary will grab the video-picture convert it from
 yuv to rgb and resize it, if neccesary, to the same size as the framebuffer or 
-vice versa. For the DM7025 (Xilleon) and DM800/DM8000 (Broadcom) the video will be
+vice versa. For the DM7025 (Xilleon) and DM800/DM8000/DM500HD (Broadcom) the video will be
 grabbed directly from the decoder memory.
 It also grabs the framebuffer picture in 32Bit, 16Bit or in 8Bit mode with the 
 correct colortable in 8Bit mode from the main graphics memory, because the 
@@ -24,7 +24,7 @@ the great support.
 Feel free to use the code for your own projects. See LICENSE file for details.
 */
 
-#define GRAB_VERSION "v0.82"
+#define GRAB_VERSION "v0.83"
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -86,8 +86,8 @@ void (*resize)(unsigned char *source, unsigned char *dest, int xsource, int ysou
 void combine(unsigned char *output, unsigned char *video, unsigned char *osd, int xres, int yres);
 char* upcase(char* mixedstr);
 
-enum {UNKNOWN,PALLAS,VULCAN,XILLEON,BRCM7401,BRCM4380};
-char *stb_name[]={"unknown","Pallas","Vulcan","Xilleon","Brcm7401","Brcm4380"};
+enum {UNKNOWN,PALLAS,VULCAN,XILLEON,BRCM7401,BRCM7400,BRCM7405};
+char *stb_name[]={"unknown","Pallas","Vulcan","Xilleon","Brcm7401","Brcm7400","Brcm7405"};
 int stb_type=UNKNOWN;
 
 // main program
@@ -117,21 +117,26 @@ int main(int argc, char **argv) {
 	FILE *pipe=popen("cat /proc/fb","r");
 	while (fgets(buf,sizeof(buf),pipe))
 	{
-		if (strstr(upcase(buf),"VULCAN")) {stb_type=VULCAN;}
-		if (strstr(upcase(buf),"PALLAS")) {stb_type=PALLAS;}
-		if (strstr(upcase(buf),"XILLEON")) {stb_type=XILLEON;}
-		if (strstr(upcase(buf),"BCM7401") || strstr(upcase(buf),"BCMFB")) {stb_type=BRCM7401;}
+		if (strstr(upcase(buf),"VULCAN")) stb_type=VULCAN;
+		if (strstr(upcase(buf),"PALLAS")) stb_type=PALLAS;
+		if (strstr(upcase(buf),"XILLEON")) stb_type=XILLEON;
+		if (strstr(upcase(buf),"BCM7401") || strstr(upcase(buf),"BCMFB")) stb_type=BRCM7401;
 	}
 	pclose(pipe);
-	if (stb_type == BRCM7401) // Bcrm7401 + Bcrm4380 use the same framebuffer string, so fall back to /proc/cpuinfO for detecting DM8000
+
+	if (stb_type == BRCM7401) // All Broadcom Dreamboxes use the same framebuffer string, so fall back to /proc/stb/info/model for detecting DM8000/DM500HD
 	{
-		pipe=popen("cat /proc/cpuinfo","r");
+		pipe=popen("cat /proc/stb/info/model","r");
 		while (fgets(buf,sizeof(buf),pipe))
 		{
-			if (strstr(upcase(buf),"BRCM4380")) {stb_type=BRCM4380;}
+			if (strstr(upcase(buf),"DM8000"))
+				stb_type=BRCM7400;
+			else if (strstr(upcase(buf),"DM500HD"))
+				stb_type=BRCM7405;
 		}
 		pclose(pipe);
 	}
+
 	if (stb_type == UNKNOWN)
 	{
 		printf("Unknown STB .. quit.\n");
@@ -482,9 +487,9 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 	char buf[256];
 	FILE *pipe;
 
-	if (stb_type == BRCM7401 || stb_type == BRCM4380)
+	if (stb_type == BRCM7401 || stb_type == BRCM7400 || stb_type == BRCM7405)
 	{
-		// grab brcm7401/4380 pic from decoder memory
+		// grab brcm7401 pic from decoder memory
 		
 		if(!(memory = (unsigned char*)mmap(0, 100, PROT_READ, MAP_SHARED, mem_fd, 0x10100000)))
 		{
@@ -517,14 +522,13 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			sscanf(buf,"%x",&res); 
 		pclose(pipe);
 
-		
 		luma = (unsigned char *)malloc(stride*(ofs));
 		chroma = (unsigned char *)malloc(stride*(ofs2+64));	
-								
+
 		// grabbing luma & chroma plane from the decoder memory
-		if (stb_type == BRCM7401)
+		if (stb_type == BRCM7401 || stb_type == BRCM7405)
 		{
-			// on dm800 we have direct access to the decoder memory
+			// on dm800/dm500hd we have direct access to the decoder memory
 			if(!(memory_tmp = (unsigned char*)mmap(0, offset + stride*(ofs2+64), PROT_READ, MAP_SHARED, mem_fd, adr)))
 			{
 				printf("Mainmemory: <Memmapping failed>\n");
@@ -535,7 +539,7 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 							// and hope we get a good timing. dont ask me why, but every DM800 i tested so far produced a good
 							// result with a 50ms delay
 			
-		} else if (stb_type == BRCM4380)
+		} else if (stb_type == BRCM7400)
 		{
 			// on dm8000 we have to use dma, so dont change anything here until you really know what you are doing !
 			
@@ -582,15 +586,20 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			munmap((void *)mem_dma, 0x1000);
 			memory_tmp+=0x1000;
 		}
-		
+
 		t=t2=dat1=0;
-		xsub=64;
+		int chr_luma_stride = 0x40;
  		int sw=1;
 
+		if (stb_type == BRCM7405)
+			chr_luma_stride *= 2;
+
+		xsub=chr_luma_stride;
+
 		// decode luma & chroma plane or lets say sort it
-		for (xtmp=0; xtmp < stride; xtmp+=64)
+		for (xtmp=0; xtmp < stride; xtmp+=chr_luma_stride)
 		{
-			if ((stride-xtmp) < 64) 
+			if ((stride-xtmp) <= chr_luma_stride)
 				xsub=stride-xtmp;
 
 			dat1=xtmp;
@@ -598,8 +607,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			for (ytmp = 0; ytmp < ofs; ytmp++) 
 			{
 				memcpy(luma+dat1,memory_tmp+t,xsub); // luma
-				t+=64;
-				
+				t+=chr_luma_stride;
+
 				switch (ofs2-ytmp) // the two switch commands are much faster than one if statement
 				{
 					case 0:
@@ -610,19 +619,18 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 				{
 					case 1:
 						memcpy(chroma+dat1,memory_tmp+offset+t2,xsub); // chroma
-						t2+=64;
+						t2+=chr_luma_stride;
 						break;
 				}
 				dat1+=stride;
 			}
 		}
-		
-		if (stb_type == BRCM7401)
+
+		if (stb_type == BRCM7401 || stb_type == BRCM7405)
 			munmap(memory_tmp, offset + stride*(ofs2+64));
-		else if (stb_type == BRCM4380)
+		else if (stb_type == BRCM7400)
 			munmap(memory_tmp, DMA_BLOCKSIZE + 0x1000);
 
-		
 		for (t=0; t< stride*ofs;t+=4)
 		{
 			SWAP(luma[t],luma[t+3]);
