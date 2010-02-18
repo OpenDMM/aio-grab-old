@@ -469,7 +469,7 @@ int main(int argc, char **argv) {
 void getvideo(unsigned char *video, int *xres, int *yres)
 {
 	printf("Grabbing Video ...\n");
-	
+
 	int mem_fd;
 	//unsigned char *memory;
 	void *memory;
@@ -671,8 +671,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		}
 		pclose(pipe);
 		
-		unsigned char frame_l[1920 * 1080]; // luma frame from video decoder
-		unsigned char frame_c[1920 * 540]; // chroma frame from video decoder
+		unsigned char *frame_l = malloc(1920 * 1080); // luma frame from video decoder
+		unsigned char *frame_c = malloc(1920 * 540); // chroma frame from video decoder
 		// grab luma buffer from decoder memory	
 		memcpy(frame_l,memory,1920*1080); 
 		// grab chroma buffer from decoder memory
@@ -714,6 +714,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			}
 			odd_even^=1;
 		}
+		free(frame_l);
+		free(frame_c);
 	} else if (stb_type == VULCAN || stb_type == PALLAS)
 	{
 		// grab via v4l device (ppc boxes)
