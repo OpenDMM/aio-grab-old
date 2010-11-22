@@ -1,5 +1,5 @@
 /*
-AiO Dreambox Screengrabber v0.83
+AiO Dreambox Screengrabber v0.83a
 
 written 2006 - 2009 by Seddi
 Contact: seddi@ihad.tv / http://www.ihad.tv
@@ -24,7 +24,7 @@ the great support.
 Feel free to use the code for your own projects. See LICENSE file for details.
 */
 
-#define GRAB_VERSION "v0.83"
+#define GRAB_VERSION "v0.83a"
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -132,6 +132,10 @@ int main(int argc, char **argv) {
 			if (strstr(upcase(buf),"DM8000"))
 				stb_type=BRCM7400;
 			else if (strstr(upcase(buf),"DM500HD"))
+				stb_type=BRCM7405;
+			else if (strstr(upcase(buf),"DM800SE"))
+				stb_type=BRCM7405;
+			else if (strstr(upcase(buf),"DM7020HD"))
 				stb_type=BRCM7405;
 		}
 		pclose(pipe);
