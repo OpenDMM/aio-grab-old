@@ -24,24 +24,25 @@ the great support.
 Feel free to use the code for your own projects. See LICENSE file for details.
 */
 
-#define GRAB_VERSION "v0.83a"
+#include "grab_config.h"
 
-#include <unistd.h>
+#include <assert.h>
 #include <fcntl.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <inttypes.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <linux/types.h>
-#include <linux/videodev.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 #include <linux/fb.h>
-#include "png.h"
-#include "jpeglib.h"
+
+#include <png.h>
+#include <jpeglib.h>
 
 #define CLAMP(x)    ((x < 0) ? 0 : ((x > 255) ? 255 : x))
 #define SWAP(x,y)	{ x ^= y; y ^= x; x ^= y; }
@@ -78,78 +79,163 @@ static const int yuv2rgbtable_bv[256] = {
 0xFF33A280, 0xFF353B3B, 0xFF36D3F6, 0xFF386CB1, 0xFF3A056C, 0xFF3B9E27, 0xFF3D36E2, 0xFF3ECF9D, 0xFF406858, 0xFF420113, 0xFF4399CE, 0xFF453289, 0xFF46CB44, 0xFF4863FF, 0xFF49FCBA, 0xFF4B9575, 0xFF4D2E30, 0xFF4EC6EB, 0xFF505FA6, 0xFF51F861, 0xFF53911C, 0xFF5529D7, 0xFF56C292, 0xFF585B4D, 0xFF59F408, 0xFF5B8CC3, 0xFF5D257E, 0xFF5EBE39, 0xFF6056F4, 0xFF61EFAF, 0xFF63886A, 0xFF652125, 0xFF66B9E0, 0xFF68529B, 0xFF69EB56, 0xFF6B8411, 0xFF6D1CCC, 0xFF6EB587, 0xFF704E42, 0xFF71E6FD, 0xFF737FB8, 0xFF751873, 0xFF76B12E, 0xFF7849E9, 0xFF79E2A4, 0xFF7B7B5F, 0xFF7D141A, 0xFF7EACD5, 0xFF804590, 0xFF81DE4B, 0xFF837706, 0xFF850FC1, 0xFF86A87C, 0xFF884137, 0xFF89D9F2, 0xFF8B72AD, 0xFF8D0B68, 0xFF8EA423, 0xFF903CDE, 0xFF91D599, 0xFF936E54, 0xFF95070F, 0xFF969FCA, 0xFF983885, 0xFF99D140, 0xFF9B69FB, 0xFF9D02B6, 0xFF9E9B71, 0xFFA0342C, 0xFFA1CCE7, 0xFFA365A2, 0xFFA4FE5D, 0xFFA69718, 0xFFA82FD3, 0xFFA9C88E, 0xFFAB6149, 0xFFACFA04, 0xFFAE92BF, 0xFFB02B7A, 0xFFB1C435, 0xFFB35CF0, 0xFFB4F5AB, 0xFFB68E66, 0xFFB82721, 0xFFB9BFDC, 0xFFBB5897, 0xFFBCF152, 0xFFBE8A0D, 0xFFC022C8, 0xFFC1BB83, 0xFFC3543E, 0xFFC4ECF9, 0xFFC685B4, 0xFFC81E6F, 0xFFC9B72A, 0xFFCB4FE5, 0xFFCCE8A0, 0xFFCE815B, 0xFFD01A16, 0xFFD1B2D1, 0xFFD34B8C, 0xFFD4E447, 0xFFD67D02, 0xFFD815BD, 0xFFD9AE78, 0xFFDB4733, 0xFFDCDFEE, 0xFFDE78A9, 0xFFE01164, 0xFFE1AA1F, 0xFFE342DA, 0xFFE4DB95, 0xFFE67450, 0xFFE80D0B, 0xFFE9A5C6, 0xFFEB3E81, 0xFFECD73C, 0xFFEE6FF7, 0xFFF008B2, 0xFFF1A16D, 0xFFF33A28, 0xFFF4D2E3, 0xFFF66B9E, 0xFFF80459, 0xFFF99D14, 0xFFFB35CF, 0xFFFCCE8A, 0xFFFE6745, 0x0, 0x198BB, 0x33176, 0x4CA31, 0x662EC, 0x7FBA7, 0x99462, 0xB2D1D, 0xCC5D8, 0xE5E93, 0xFF74E, 0x119009, 0x1328C4, 0x14C17F, 0x165A3A, 0x17F2F5, 0x198BB0, 0x1B246B, 0x1CBD26, 0x1E55E1, 0x1FEE9C, 0x218757, 0x232012, 0x24B8CD, 0x265188, 0x27EA43, 0x2982FE, 0x2B1BB9, 0x2CB474, 0x2E4D2F, 0x2FE5EA, 0x317EA5, 0x331760, 0x34B01B, 0x3648D6, 0x37E191, 0x397A4C, 0x3B1307, 0x3CABC2, 0x3E447D, 0x3FDD38, 0x4175F3, 0x430EAE, 0x44A769, 0x464024, 0x47D8DF, 0x49719A, 0x4B0A55, 0x4CA310, 0x4E3BCB, 0x4FD486, 0x516D41, 0x5305FC, 0x549EB7, 0x563772, 0x57D02D, 0x5968E8, 0x5B01A3, 0x5C9A5E, 0x5E3319, 0x5FCBD4, 0x61648F, 0x62FD4A, 0x649605, 0x662EC0, 0x67C77B, 0x696036, 0x6AF8F1, 0x6C91AC, 0x6E2A67, 0x6FC322, 0x715BDD, 0x72F498, 0x748D53, 0x76260E, 0x77BEC9, 0x795784, 0x7AF03F, 0x7C88FA, 0x7E21B5, 0x7FBA70, 0x81532B, 0x82EBE6, 0x8484A1, 0x861D5C, 0x87B617, 0x894ED2, 0x8AE78D, 0x8C8048, 0x8E1903, 0x8FB1BE, 0x914A79, 0x92E334, 0x947BEF, 0x9614AA, 0x97AD65, 0x994620, 0x9ADEDB, 0x9C7796, 0x9E1051, 0x9FA90C, 0xA141C7, 0xA2DA82, 0xA4733D, 0xA60BF8, 0xA7A4B3, 0xA93D6E, 0xAAD629, 0xAC6EE4, 0xAE079F, 0xAFA05A, 0xB13915, 0xB2D1D0, 0xB46A8B, 0xB60346, 0xB79C01, 0xB934BC, 0xBACD77, 0xBC6632, 0xBDFEED, 0xBF97A8, 0xC13063, 0xC2C91E, 0xC461D9, 0xC5FA94, 0xC7934F, 0xC92C0A, 0xCAC4C5
 };
 
-void getvideo(unsigned char *video, int *xres, int *yres);
-void getosd(unsigned char *osd, int *xres, int *yres);
-void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors);
-void fast_resize(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors);
-void (*resize)(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors);
-void combine(unsigned char *output, unsigned char *video, unsigned char *osd, int xres, int yres);
-char* upcase(char* mixedstr);
+static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yres);
+static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres);
+
+static void smooth_resize(const unsigned char *source, unsigned char *dest,
+			  unsigned int xsource, unsigned int ysource,
+			  unsigned int xdest, unsigned int ydest,
+			  unsigned int colors);
+
+static void fast_resize(const unsigned char *source, unsigned char *dest,
+			unsigned int xsource, unsigned int ysource,
+			unsigned int xdest, unsigned int ydest,
+			unsigned int colors);
+
+static void (*resize)(const unsigned char *source, unsigned char *dest,
+		      unsigned int xsource, unsigned int ysource,
+		      unsigned int xdest, unsigned int ydest,
+		      unsigned int colors);
+
+static void combine(unsigned char *output,
+		    const unsigned char *video, const unsigned char *osd,
+		    unsigned int xres, unsigned int yres);
 
 enum {UNKNOWN,PALLAS,VULCAN,XILLEON,BRCM7401,BRCM7400,BRCM7405};
-char *stb_name[]={"unknown","Pallas","Vulcan","Xilleon","Brcm7401","Brcm7400","Brcm7405"};
-int stb_type=UNKNOWN;
+static const char *stb_name[]={"unknown","Pallas","Vulcan","Xilleon","Brcm7401","Brcm7400","Brcm7405"};
+static int stb_type=UNKNOWN;
+
+static const char *file_getline(const char *filename)
+{
+	static char *line = NULL;
+	static size_t n = 0;
+	ssize_t ret;
+	FILE *f;
+
+	f = fopen(filename, "r");
+	if (f == NULL) {
+		perror(filename);
+		return NULL;
+	}
+
+	ret = getline(&line, &n, f);
+
+	fclose(f);
+
+	if (ret < 0)
+		return NULL;
+
+	while (ret-- > 0) {
+		if ((line[ret] != '\n') &&
+		    (line[ret] != '\r'))
+			break;
+		line[ret] = '\0';
+	}
+
+	return line;
+}
+
+static int file_scanf_line(const char *filename, const char *fmt, ...)
+{
+	const char *line = file_getline(filename);
+	va_list ap;
+	int ret;
+
+	if (line == NULL)
+		return -1;
+
+	va_start(ap, fmt);
+	ret = vsscanf(line, fmt, ap);
+	va_end(ap);
+
+	return ret;
+}
+
+static int file_scanf_lines(const char *filename, const char *fmt, ...)
+{
+	char *line = NULL;
+	size_t n = 0;
+	int ret = 0;
+	va_list ap;
+	FILE *f;
+
+	f = fopen(filename, "r");
+	if (f == NULL) {
+		perror(filename);
+		return -1;
+	}
+
+	va_start(ap, fmt);
+
+	while (getline(&line, &n, f) >= 0) {
+		ret = vsscanf(line, fmt, ap);
+		if (ret > 0)
+			break;
+	}
+
+	if (line)
+		free(line);
+
+	va_end(ap);
+
+	fclose(f);
+
+	return ret;
+}
 
 // main program
 
 int main(int argc, char **argv) {
 
-	printf("AiO Dreambox Screengrabber "GRAB_VERSION"\n\n");
+	printf("AiO Dreambox Screengrabber " PACKAGE_VERSION "\n\n");
 
-	int xres_v,yres_v,xres_o,yres_o,xres,yres,aspect;
-	int c,osd_only,video_only,use_osd_res,width,use_png,use_jpg,jpg_quality,no_aspect,use_letterbox;
+	unsigned int xres_v,yres_v,xres_o,yres_o,xres,yres,aspect,width;
+	int c,osd_only,video_only,use_osd_res,use_png,use_jpg,jpg_quality,no_aspect,use_letterbox;
 
 	// we use fast resize as standard now
 	resize = &fast_resize;
-	
+
 	osd_only=video_only=use_osd_res=width=use_png=use_jpg=no_aspect=use_letterbox=0;
 	jpg_quality=50;
 	aspect=1;
-	
+
 	unsigned char *video, *osd, *output;
-	int output_bytes=3;
-	
-	char filename[256];
-	sprintf(filename,"/tmp/screenshot.bmp");
-	
+	unsigned int output_bytes = 3;
+
+	char filename[256] = { "/tmp/screenshot.bmp" };
+
 	// detect STB
-	char buf[256];
-	FILE *pipe=popen("cat /proc/fb","r");
-	while (fgets(buf,sizeof(buf),pipe))
-	{
-		if (strstr(upcase(buf),"VULCAN")) stb_type=VULCAN;
-		if (strstr(upcase(buf),"PALLAS")) stb_type=PALLAS;
-		if (strstr(upcase(buf),"XILLEON")) stb_type=XILLEON;
-		if (strstr(upcase(buf),"BCM7401") || strstr(upcase(buf),"BCMFB")) stb_type=BRCM7401;
-	}
-	pclose(pipe);
+	const char *line = file_getline("/proc/fb");
+	if (line == NULL)
+		return 1;
 
-	if (stb_type == BRCM7401) // All Broadcom Dreamboxes use the same framebuffer string, so fall back to /proc/stb/info/model for detecting DM8000/DM500HD
-	{
-		pipe=popen("cat /proc/stb/info/model","r");
-		while (fgets(buf,sizeof(buf),pipe))
-		{
-			if (strstr(upcase(buf),"DM8000"))
-				stb_type=BRCM7400;
-			else if (strstr(upcase(buf),"DM500HD"))
-				stb_type=BRCM7405;
-			else if (strstr(upcase(buf),"DM800SE"))
-				stb_type=BRCM7405;
-			else if (strstr(upcase(buf),"DM7020HD"))
-				stb_type=BRCM7405;
-		}
-		pclose(pipe);
+	if (strstr(line, "bcmfb")) {
+		line = file_getline("/proc/stb/info/model");
+		if (line == NULL)
+			return 1;
+		if (!strcmp(line, "dm8000"))
+			stb_type = BRCM7400;
+		else if (!strcmp(line, "dm800"))
+			stb_type = BRCM7401;
+		else if (!strcmp(line, "dm500hd") ||
+			 !strcmp(line, "dm800se") ||
+			 !strcmp(line, "dm7020hd"))
+			stb_type = BRCM7405;
+	} else if (strstr(line, "xilleonfb")) {
+		stb_type = XILLEON;
+	} else if (strstr(line, "Pallas FB")) {
+		stb_type = PALLAS;
+	} else if (strstr(line, "vulcanfb")) {
+		stb_type = VULCAN;
 	}
 
-	if (stb_type == UNKNOWN)
-	{
+	if (stb_type == UNKNOWN) {
 		printf("Unknown STB .. quit.\n");
 		return 1;
-	} else
-	{
-		printf("Detected STB: %s\n",stb_name[stb_type]);
 	}
-	
+
+	printf("Detected STB: %s\n",stb_name[stb_type]);
+
 	// process command line
 	while ((c = getopt (argc, argv, "dhj:lbnopr:v")) != -1)
 	{
@@ -203,13 +289,13 @@ int main(int argc, char **argv) {
 			case 'p': // use png file format
 				use_png=1;
 				use_jpg=0;	
-				sprintf(filename,"/tmp/screenshot.png");
+				strcpy(filename,"/tmp/screenshot.png");
 				break;
 			case 'j': // use jpg file format
 				use_jpg=1;
 				use_png=0;
 				jpg_quality=atoi(optarg);
-				sprintf(filename,"/tmp/screenshot.jpg");
+				strcpy(filename,"/tmp/screenshot.jpg");
 				break;
 			case 'n':
 				no_aspect=1;
@@ -217,43 +303,38 @@ int main(int argc, char **argv) {
 		} 
 	}
 	if (optind < argc) // filename
-		sprintf(filename,"%s",argv[optind]);
+		strcpy(filename, argv[optind]);
 
-	int mallocsize=1920*1080;
+	unsigned int mallocsize = 1920 * 1080;
 	if (stb_type == VULCAN || stb_type == PALLAS)
-		mallocsize=720*576;
-	
-	video = (unsigned char *)malloc(mallocsize*3);
-	osd = (unsigned char *)malloc(mallocsize*4);	
+		mallocsize = 720 * 576;
+
+	video = malloc(mallocsize * 3);
+	assert(video);
+	osd = malloc(mallocsize * 4);
+	assert(osd);
 
 	if ((stb_type == VULCAN || stb_type == PALLAS) && width > 720)
-		mallocsize=width*(width * 0.8 + 1);
+		mallocsize = width * (width * 0.8 + 1);
 	
-	output = (unsigned char *)malloc(mallocsize*4);
+	output = malloc(mallocsize * 4);
+	assert(output);
 
 	// get osd
-	if (!video_only)
-		getosd(osd,&xres_o,&yres_o);
-	
+	xres_o = yres_o = 0;
+	if (!video_only && !getosd(osd, &xres_o, &yres_o))
+		return 1;
+
 	// get video
-	if (!osd_only)
-		getvideo(video,&xres_v,&yres_v);
-	
+	if (!osd_only && !getvideo(video, &xres_v, &yres_v))
+		return 1;
+
 	// get aspect ratio
 	if (stb_type == VULCAN || stb_type == PALLAS)
-	{
-		pipe=popen("cat /proc/bus/bitstream","r");
-		while (fgets(buf,sizeof(buf),pipe))
-			sscanf(buf,"A_RATIO: %d",&aspect); 
-		pclose(pipe);
-	} else
-	{
-		pipe=popen("cat /proc/stb/vmpeg/0/aspect","r");
-		while (fgets(buf,sizeof(buf),pipe))
-			sscanf(buf,"%x",&aspect); 
-		pclose(pipe);
-	}
-	
+		file_scanf_lines("/proc/bus/bitstream", "A_RATIO: %d", &aspect);
+	else
+		file_scanf_line("/proc/stb/vmpeg/0/aspect", "%x", &aspect);
+
 	// resizing
  	if (video_only)
 	{
@@ -323,36 +404,34 @@ int main(int argc, char **argv) {
 		yres/=1.42;
 		memcpy(output,osd,xres*yres*output_bytes);
 	}
-	
-	
+
 	// use letterbox ?
 	if (use_letterbox && xres*0.8 != yres && xres*0.8 <= 1080)
 	{
-		int yres_neu;
-		yres_neu=xres*0.8;
+		unsigned int yres_neu = xres * 0.8;
 		printf("Create letterbox %d x %d ...\n",xres,yres_neu);		
-		if (yres_neu > yres)
-		{
-			int ofs;
-			ofs=(yres_neu-yres)>>1;
+		if (yres_neu > yres) {
+			unsigned int ofs = (yres_neu - yres) >> 1;
 			memmove(output+ofs*xres*output_bytes,output,xres*yres*output_bytes);
 			memset(output,0,ofs*xres*output_bytes);
 			memset(output+ofs*xres*3+xres*yres*output_bytes,0,ofs*xres*output_bytes);
 		}
-		yres=yres_neu;
+		yres = yres_neu;
 	}
-	
-	
+
 	// saving picture
 	printf("Saving %d bit %s ...\n",(use_jpg?3*8:output_bytes*8),filename);
 	FILE *fd2 = fopen(filename, "wr");
-	
-	
+	if (!fd2) {
+		perror(filename);
+		return 1;
+	}
+
 	if (!use_png && !use_jpg)
 	{
 		// write bmp
 		unsigned char hdr[14 + 40];
-		int i = 0;
+		unsigned int i = 0;
 #define PUT32(x) hdr[i++] = ((x)&0xFF); hdr[i++] = (((x)>>8)&0xFF); hdr[i++] = (((x)>>16)&0xFF); hdr[i++] = (((x)>>24)&0xFF);
 #define PUT16(x) hdr[i++] = ((x)&0xFF); hdr[i++] = (((x)>>8)&0xFF);
 #define PUT8(x) hdr[i++] = ((x)&0xFF);
@@ -383,9 +462,10 @@ int main(int argc, char **argv) {
 		info_ptr = png_create_info_struct(png_ptr);
 		png_init_io(png_ptr, fd2);
 
-		row_pointers=(png_bytep*)malloc(sizeof(png_bytep)*yres);
+		row_pointers = malloc(sizeof(png_bytep) * yres);
+		assert(row_pointers);
 
-		int y;
+		unsigned int y;
 		for (y=0; y<yres; y++)
 			row_pointers[y]=output+(y*xres*output_bytes);
 		
@@ -400,7 +480,7 @@ int main(int argc, char **argv) {
 	} else 
 	{
 		// write jpg
-		int x,y,xres1,xres2,x2;
+		unsigned int x,y,xres1,xres2,x2;
 		if (output_bytes == 3) // swap bgr<->rgb
 		{
 			for (y=0; y<yres; y++)
@@ -432,7 +512,7 @@ int main(int argc, char **argv) {
 		struct jpeg_compress_struct cinfo;
 		struct jpeg_error_mgr jerr;
 		JSAMPROW row_pointer[1];	
-		int row_stride;		
+		unsigned int row_stride;		
 		cinfo.err = jpeg_std_error(&jerr);
 
 		jpeg_create_compress(&cinfo);
@@ -470,42 +550,35 @@ int main(int argc, char **argv) {
 
 // grabing the video picture
 
-void getvideo(unsigned char *video, int *xres, int *yres)
+static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yres)
 {
+	unsigned char *luma = NULL, *chroma = NULL;
+	unsigned int stride = 0, res = 0;
+	int mem_fd;
+
 	printf("Grabbing Video ...\n");
 
-	int mem_fd;
-	//unsigned char *memory;
-	void *memory;
-	if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC) ) < 0) {
-		printf("Mainmemory: can't open /dev/mem \n");
-		return;
+	mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (mem_fd < 0) {
+		perror("/dev/mem");
+		return false;
 	}
-
-	unsigned char *luma, *chroma, *memory_tmp;
-	luma = (unsigned char *)malloc(1); // real malloc will be done later
-	chroma = (unsigned char *)malloc(1); // this is just to be sure it get initialized and free() will not segfaulting
-	memory_tmp = (unsigned char *)malloc(1);
-	int t,stride,res;
-	res = stride = 0;
-	char buf[256];
-	FILE *pipe;
 
 	if (stb_type == BRCM7401 || stb_type == BRCM7400 || stb_type == BRCM7405)
 	{
 		// grab brcm7401 pic from decoder memory
-		
-		if(!(memory = (unsigned char*)mmap(0, 100, PROT_READ, MAP_SHARED, mem_fd, 0x10100000)))
-		{
-			printf("Mainmemory: <Memmapping failed>\n");
-			return;
+		unsigned char *memory = mmap(0, 100, PROT_READ, MAP_SHARED, mem_fd, 0x10100000);
+		if (memory == MAP_FAILED) {
+			perror("mmap");
+			return false;
 		}
 
 		unsigned char data[100];
 
-		int adr,adr2,ofs,ofs2,offset/*,vert_start,vert_end*/;
-		int xtmp,xsub,ytmp,t2,dat1;
-		
+		unsigned int adr,adr2,ofs,ofs2,offset/*,vert_start,vert_end*/;
+		unsigned int xsub,ytmp;
+		unsigned int xtmp;
+
 		memcpy(data,memory,100); 
 		//vert_start=data[0x1B]<<8|data[0x1A];
 		//vert_end=data[0x19]<<8|data[0x18];
@@ -521,51 +594,46 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		// printf("Stride: %d Res: %d\n",stride,res);
 		// printf("Adr: %X Adr2: %X OFS: %d %d\n",adr,adr2,ofs,ofs2);
 
-		pipe=popen("cat /proc/stb/vmpeg/0/yres","r");
-		while (fgets(buf,sizeof(buf),pipe))
-			sscanf(buf,"%x",&res); 
-		pclose(pipe);
+		file_scanf_line("/proc/stb/vmpeg/0/yres", "%x", &res);
 
-		luma = (unsigned char *)malloc(stride*(ofs));
-		chroma = (unsigned char *)malloc(stride*(ofs2+64));	
+		luma = malloc(stride * ofs);
+		assert(luma);
+		chroma = malloc(stride * (ofs2 + 64));
+		assert(chroma);
 
 		// grabbing luma & chroma plane from the decoder memory
-		if (stb_type == BRCM7401 || stb_type == BRCM7405)
-		{
+		if (stb_type == BRCM7401 || stb_type == BRCM7405) {
 			// on dm800/dm500hd we have direct access to the decoder memory
-			if(!(memory_tmp = (unsigned char*)mmap(0, offset + stride*(ofs2+64), PROT_READ, MAP_SHARED, mem_fd, adr)))
-			{
-				printf("Mainmemory: <Memmapping failed>\n");
-				return;
+			memory = mmap(0, offset + stride*(ofs2+64), PROT_READ, MAP_SHARED, mem_fd, adr);
+			if (memory == MAP_FAILED) {
+				perror("mmap");
+				return false;
 			}
 			
 			usleep(50000); 	// we try to get a full picture, its not possible to get a sync from the decoder so we use a delay
-							// and hope we get a good timing. dont ask me why, but every DM800 i tested so far produced a good
-							// result with a 50ms delay
-			
-		} else if (stb_type == BRCM7400)
-		{
+					// and hope we get a good timing. dont ask me why, but every DM800 i tested so far produced a good
+					// result with a 50ms delay
+		} else if (stb_type == BRCM7400) { 
 			// on dm8000 we have to use dma, so dont change anything here until you really know what you are doing !
-			
-			if(!(memory_tmp = (unsigned char*)mmap(0, DMA_BLOCKSIZE + 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, SPARE_RAM)))
-			{
-				printf("Mainmemory: <Memmapping failed>\n");
-				return;
-			}
-			volatile unsigned long *mem_dma;
-			if(!(mem_dma = (volatile unsigned long*)mmap(0, 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, 0x10c02000)))
-			{
-				printf("Mainmemory: <Memmapping failed>\n");
-				return;
+			memory = mmap(0, DMA_BLOCKSIZE + 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, SPARE_RAM);
+			if (memory == MAP_FAILED) {
+				perror("mmap");
+				return false;
 			}
 
-			int i = 0;
-			int tmp_len = DMA_BLOCKSIZE;
-			int tmp_size = offset + stride*(ofs2+64);
+			volatile unsigned long *mem_dma;
+			mem_dma = mmap(0, 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, 0x10c02000);
+			if (mem_dma == MAP_FAILED) {
+				perror("mmap");
+				return false;
+			}
+
+			unsigned int i = 0;
+			unsigned int tmp_len = DMA_BLOCKSIZE;
+			unsigned int tmp_size = offset + stride * (ofs2 + 64);
 			for (i=0; i < tmp_size; i += DMA_BLOCKSIZE)
 			{
-				
-				unsigned long *descriptor = (void*)memory_tmp;
+				unsigned long *descriptor = (void*)memory;
 
 				if (i + DMA_BLOCKSIZE > tmp_size)
 					tmp_len = tmp_size - i;
@@ -584,16 +652,15 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 				while (mem_dma[5] == 1)
 					usleep(2);
 				mem_dma[2] = 0;
-		
 			}
 
 			munmap((void *)mem_dma, 0x1000);
-			memory_tmp+=0x1000;
+			memory += 0x1000;
 		}
 
-		t=t2=dat1=0;
-		int chr_luma_stride = 0x40;
- 		int sw=1;
+		unsigned int t = 0, t2 = 0, dat1 = 0;
+		unsigned int chr_luma_stride = 0x40;
+ 		unsigned int sw;
 
 		if (stb_type == BRCM7405)
 			chr_luma_stride *= 2;
@@ -610,8 +677,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			sw=1;
 			for (ytmp = 0; ytmp < ofs; ytmp++) 
 			{
-				memcpy(luma+dat1,memory_tmp+t,xsub); // luma
-				t+=chr_luma_stride;
+				memcpy(luma + dat1, memory + t, xsub); // luma
+				t += chr_luma_stride;
 
 				switch (ofs2-ytmp) // the two switch commands are much faster than one if statement
 				{
@@ -622,8 +689,8 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 				switch (sw)
 				{
 					case 1:
-						memcpy(chroma+dat1,memory_tmp+offset+t2,xsub); // chroma
-						t2+=chr_luma_stride;
+						memcpy(chroma + dat1, memory + offset + t2, xsub); // chroma
+						t2 += chr_luma_stride;
 						break;
 				}
 				dat1+=stride;
@@ -631,9 +698,11 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 		}
 
 		if (stb_type == BRCM7401 || stb_type == BRCM7405)
-			munmap(memory_tmp, offset + stride*(ofs2+64));
-		else if (stb_type == BRCM7400)
-			munmap(memory_tmp, DMA_BLOCKSIZE + 0x1000);
+			munmap(memory, offset + stride * (ofs2 + 64));
+		else if (stb_type == BRCM7400) {
+			memory -= 0x1000;
+			munmap(memory, DMA_BLOCKSIZE + 0x1000);
+		}
 
 		for (t=0; t< stride*ofs;t+=4)
 		{
@@ -647,47 +716,41 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 			}
 		
 		}
-	} else if (stb_type == XILLEON)
-	{
+	} else if (stb_type == XILLEON) {
 		// grab xilleon pic from decoder memory
-		
-		if(!(memory = (unsigned char*)mmap(0, 1920*1152*6, PROT_READ, MAP_SHARED, mem_fd, 0x6000000)))
-		{
-			printf("Mainmemory: <Memmapping failed>\n");
-			return;
+		unsigned char *memory = mmap(0, 1920*1152*6, PROT_READ, MAP_SHARED, mem_fd, 0x6000000);
+		if (memory == MAP_FAILED) {
+			perror("mmap");
+			return false;
 		}
-		
-		luma = (unsigned char *)malloc(1920*1152);
-		chroma = (unsigned char *)malloc(1920*576);
-		
-		int offset=1920*1152*5;	// offset for chroma buffer
-		
-		pipe=popen("cat /proc/stb/vmpeg/0/xres","r");
-		while (fgets(buf,sizeof(buf),pipe))
-		{
-			sscanf(buf,"%x",&stride); 
-		}
-		pclose(pipe);
-		pipe=popen("cat /proc/stb/vmpeg/0/yres","r");
-		while (fgets(buf,sizeof(buf),pipe))
-		{
-			sscanf(buf,"%x",&res); 
-		}
-		pclose(pipe);
-		
+
+		luma = malloc(1920 * 1152);
+		assert(luma);
+		chroma = malloc(1920 * 576);
+		assert(chroma);
+
+		unsigned int offset = 1920 * 1152 * 5;	// offset for chroma buffer
+
+		file_scanf_line("/proc/stb/vmpeg/0/xres", "%x", &stride);
+		file_scanf_line("/proc/stb/vmpeg/0/yres", "%x", &res);
+
 		unsigned char *frame_l = malloc(1920 * 1080); // luma frame from video decoder
+		assert(frame_l);
 		unsigned char *frame_c = malloc(1920 * 540); // chroma frame from video decoder
+		assert(frame_c);
+
 		// grab luma buffer from decoder memory	
 		memcpy(frame_l,memory,1920*1080); 
 		// grab chroma buffer from decoder memory
 		memcpy(frame_c,memory+offset,1920*540);
-		
+
 		munmap(memory, 1920*1152*6);
 
-		int xtmp,ytmp,t,t2,odd_even,oe2,ysub,xsub;
-		int ypart=32;
-		int xpart=128;
-		t=t2=odd_even=oe2=0;
+		unsigned int xtmp, ytmp, xsub, ysub;
+		const unsigned int ypart = 32;
+		const unsigned int xpart = 128;
+		unsigned int t = 0, t2 = 0, odd_even = 0;
+		int oe2 = 0;
 
 		// "decode" luma/chroma, there are 128x32pixel blocks inside the decoder mem
 		for (ysub=0; ysub<(res/32)+1; ysub++) 
@@ -724,40 +787,41 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 	{
 		// grab via v4l device (ppc boxes)
 		
-		memory_tmp = (unsigned char *)malloc(720 * 576 * 3 + 16);
-		
+		unsigned char *memory = malloc(720 * 576 * 3 + 16);
+		assert(memory);
+
 		int fd_video = open(VIDEO_DEV, O_RDONLY);
-		if (fd_video < 0)
-		{
-			printf("could not open /dev/video");
-			return;
-		}	 
-		
-		int r = read(fd_video, memory_tmp, 720 * 576 * 3 + 16);
-		if (r < 16)
-		{
-			fprintf(stderr, "read failed\n");
+		if (fd_video < 0) {
+			perror(VIDEO_DEV);
+			return false;
+		}
+
+		ssize_t r = read(fd_video, memory, 720 * 576 * 3 + 16);
+		if (r < 16) {
+			perror("read");
 			close(fd_video);
-			return;
+			return false;
 		}
 		close(fd_video);
-		
-		int *size = (int*)memory_tmp;
+
+		int *size = (int*)memory;
 		stride = size[0];
 		res = size[1];
-		
-		luma = (unsigned char *)malloc(stride * res);
-		chroma = (unsigned char *)malloc(stride * res);
-		
-		memcpy (luma, memory_tmp + 16, stride * res);
-		memcpy (chroma, memory_tmp + 16 + stride * res, stride * res);
-		
-		free(memory_tmp);
+
+		luma = malloc(stride * res);
+		assert(luma);
+		chroma = malloc(stride * res);
+		assert(chroma);
+
+		memcpy(luma, memory + 16, stride * res);
+		memcpy(chroma, memory + 16 + stride * res, stride * res);
+
+		free(memory);
 	}
 
 	close(mem_fd);	
 	
-	int Y, U, V, y ,x, out1, pos, RU, GU, GV, BV, rgbstride;
+	int Y, U, V, y ,x, out1, pos, RU, GU, GV, BV, rgbstride, t;
 	Y=U=V=0;
 		
 	// yuv2rgb conversion (4:2:0)
@@ -823,48 +887,49 @@ void getvideo(unsigned char *video, int *xres, int *yres)
 	*xres=stride;
 	*yres=res;
 	printf("... Video-Size: %d x %d\n",*xres,*yres);
-	free(luma);
-	free(chroma);
+	if (luma)
+		free(luma);
+	if (chroma)
+		free(chroma);
+
+	return true;
 }
 
 // grabing the osd picture
 
-void getosd(unsigned char *osd, int *xres, int *yres)
+static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres)
 {
-	int fb,x,y,pos,pos1,pos2,ofs;
+	int fb,pos,pos1,pos2,ofs;
+	unsigned int x, y;
 	unsigned char *lfb;
 	struct fb_fix_screeninfo fix_screeninfo;
 	struct fb_var_screeninfo var_screeninfo;
-	
-	fb=open("/dev/fb/0", O_RDWR);
-	if (fb == -1)
-	{
-		fb=open("/dev/fb0", O_RDWR);
-		if (fb == -1)
-		{
-			printf("Framebuffer failed\n");
-			return;
+
+	fb = open("/dev/fb0", O_RDWR);
+	if (fb == -1) {
+		fb = open("/dev/fb/0", O_RDWR);
+		if (fb == -1) {
+			perror("fbdev");
+			return false;
 		}
 	}
-	
-	if(ioctl(fb, FBIOGET_FSCREENINFO, &fix_screeninfo) == -1)
-	{
-		printf("Framebuffer: <FBIOGET_FSCREENINFO failed>\n");
-		return;
+
+	if (ioctl(fb, FBIOGET_FSCREENINFO, &fix_screeninfo) == -1) {
+		perror("FBIOGET_FSCREENINFO");
+		return false;
 	}
 
-	if(ioctl(fb, FBIOGET_VSCREENINFO, &var_screeninfo) == -1)
-	{
-		printf("Framebuffer: <FBIOGET_VSCREENINFO failed>\n");
-		return;
+	if (ioctl(fb, FBIOGET_VSCREENINFO, &var_screeninfo) == -1) {
+		perror("FBIOGET_VSCREENINFO");
+		return false;
 	}
 	
-	if(!(lfb = (unsigned char*)mmap(0, fix_screeninfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0)))
-	{
-		printf("Framebuffer: <Memmapping failed>\n");
-		return;
+	lfb = mmap(0, fix_screeninfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
+	if (lfb == MAP_FAILED) {
+		perror("mmap");
+		return false;
 	}
-	
+
 	if ( var_screeninfo.bits_per_pixel == 32 ) 
 	{
 		printf("Grabbing 32bit Framebuffer ...\n");
@@ -880,9 +945,9 @@ void getosd(unsigned char *osd, int *xres, int *yres)
 		else // DM7025 have an offset, so we have to do it line for line
 		{
 			unsigned char *memory; // use additional buffer to speed up especially when using hd skins
-			memory = (unsigned char *)malloc(fix_screeninfo.line_length*var_screeninfo.yres);
+			memory = malloc(fix_screeninfo.line_length*var_screeninfo.yres);
+			assert(memory);
 			memcpy(memory,lfb,fix_screeninfo.line_length*var_screeninfo.yres);
-			printf("%d\n",ofs);
 			for (y=0; y < var_screeninfo.yres; y+=1)
 				memcpy(osd+y*var_screeninfo.xres*4,memory+y*fix_screeninfo.line_length,var_screeninfo.xres*4);
 			free(memory);
@@ -920,17 +985,18 @@ void getosd(unsigned char *osd, int *xres, int *yres)
 		unsigned char *memory;
 		unsigned short rd[256], gn[256], bl[256], tr[256];
 		
-		if ((mem_fd = open("/dev/mem", O_RDWR) ) < 0) {
-			printf("Mainmemory: can't open /dev/mem \n");
-			return;
+		mem_fd = open("/dev/mem", O_RDWR);
+		if (mem_fd < 0) {
+			perror("/dev/mem");
+			return false;
 		}
 
-		if(!(memory = (unsigned char*)mmap(0, fix_screeninfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, fix_screeninfo.smem_start-0x1000)))
-		{
-			printf("Mainmemory: <Memmapping failed>\n");
-			return;
+		memory = mmap(0, fix_screeninfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, fix_screeninfo.smem_start - 0x1000);
+		if (memory == MAP_FAILED) {
+			perror("mmap");
+			return false;
 		}
-		
+
 		if (stb_type == VULCAN) // DM500/5620 stores the colors as a 16bit word with yuv values, so we have to convert :(
 		{
 			unsigned short yuv;
@@ -967,7 +1033,7 @@ void getosd(unsigned char *osd, int *xres, int *yres)
 		} else
 		{
 			printf("unsupported framebuffermode\n");
-			return;
+			return false;
 		}
 		close(mem_fd);
 		
@@ -993,15 +1059,20 @@ void getosd(unsigned char *osd, int *xres, int *yres)
 	*xres=var_screeninfo.xres;
 	*yres=var_screeninfo.yres;
 	printf("... Framebuffer-Size: %d x %d\n",*xres,*yres);
+	return true;
 }
 
 // bicubic pixmap resizing
 
-void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors)
+static void smooth_resize(const unsigned char *source, unsigned char *dest,
+			  unsigned int xsource, unsigned int ysource,
+			  unsigned int xdest, unsigned int ydest,
+			  unsigned int colors)
 {
 	unsigned int xs,ys,xd,yd,dpixel,fx,fy;
 	unsigned int c,tmp_i;
-	int x,y,t,t1;
+	unsigned int t,t1;
+	unsigned int x, y;
 	xs=xsource; // x-resolution source
 	ys=ysource; // y-resolution source
 	xd=xdest; // x-resolution destination
@@ -1065,12 +1136,16 @@ void smooth_resize(unsigned char *source, unsigned char *dest, int xsource, int 
 
 // "nearest neighbor" pixmap resizing
 
-void fast_resize(unsigned char *source, unsigned char *dest, int xsource, int ysource, int xdest, int ydest, int colors)
+static void fast_resize(const unsigned char *source, unsigned char *dest,
+			unsigned int xsource, unsigned int ysource,
+			unsigned int xdest, unsigned int ydest,
+			unsigned int colors)
 {
-    int x_ratio = (int)((xsource<<16)/xdest) ;
-    int y_ratio = (int)((ysource<<16)/ydest) ;
+	unsigned int x_ratio = (xsource << 16) / xdest;
+	unsigned int y_ratio = (ysource << 16) / ydest;
 
-	int x2, y2, c, i ,j, y2_xsource, i_xdest, y2_x2_colors, i_x_colors;
+	unsigned int x2, i ,j, y2_xsource, i_xdest, y2_x2_colors, i_x_colors;
+	unsigned int c;
     for (i=0;i<ydest;i++) 
 	{
 		y2_xsource = ((i*y_ratio)>>16)*xsource; // do some precalculations
@@ -1088,30 +1163,24 @@ void fast_resize(unsigned char *source, unsigned char *dest, int xsource, int ys
 
 // combining pixmaps by using an alphamap
 
-void combine(unsigned char *output, unsigned char *video, unsigned char *osd, int xres, int yres)
+static void combine(unsigned char *output,
+		    const unsigned char *video, const unsigned char *osd,
+		    unsigned int xres, unsigned int yres)
 {
-	int a,apos,a2,pos1,vpos1;
+	unsigned int a,apos,a2,pos1,vpos1;
 	
 	apos=pos1=vpos1=0;
 	for (a=xres*yres; a != 0; a--)
 	{	
 		apos=pos1+3;
 		a2=0xFF-osd[apos];
-		output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-		output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-		output[vpos1] =  ( ( video[vpos1++] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+		output[vpos1] =  ( ( video[vpos1] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+		vpos1++;
+		output[vpos1] =  ( ( video[vpos1] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+		vpos1++;
+		output[vpos1] =  ( ( video[vpos1] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
+		vpos1++;
 		pos1++; // skip alpha byte
 	}
 }
 
-// helpers
-
-char* upcase(char* mixedstr) 
-{
-	int j;
-	for (j=0; j< strlen(mixedstr); ++j)
-	{
-		mixedstr[j]=toupper(mixedstr[j]);
-	} 
-	return mixedstr;
-}
