@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
 
 	printf("AiO Dreambox Screengrabber " PACKAGE_VERSION "\n\n");
 
-	unsigned int xres_v,yres_v,xres_o,yres_o,xres,yres,aspect,width;
+	unsigned int xres_v = 0,yres_v = 0,xres_o,yres_o,xres,yres,aspect,width;
 	int c,osd_only,video_only,use_osd_res,use_png,use_jpg,jpg_quality,no_aspect,use_letterbox;
 
 	// we use fast resize as standard now
