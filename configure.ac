@@ -16,6 +16,13 @@ AC_PROG_CC
 
 # Checks for libraries.
 PKG_CHECK_MODULES(LIBPNG, libpng)
+
+PKG_CHECK_MODULES(LIBSWSCALE, libswscale, HAVE_LIBSWSCALE="yes", HAVE_LIBSWSCALE="no")
+AM_CONDITIONAL(HAVE_LIBSWSCALE, test "$HAVE_LIBSWSCALE" = "yes")
+if test "$HAVE_LIBSWSCALE" = "yes"; then
+	AC_DEFINE(HAVE_LIBSWSCALE,1,[Define to 1 if you have libswscale])
+fi
+
 AC_CHECK_LIB([jpeg], [jpeg_set_defaults], [LIBJPEG_LIBS="-ljpeg"], [AC_MSG_ERROR([Could not find libjpeg])])
 AC_SUBST(LIBJPEG_LIBS)
 

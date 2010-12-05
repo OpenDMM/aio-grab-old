@@ -27,6 +27,7 @@ Feel free to use the code for your own projects. See LICENSE file for details.
 #include "grab_config.h"
 
 #include <assert.h>
+#include <byteswap.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -44,17 +45,144 @@ Feel free to use the code for your own projects. See LICENSE file for details.
 #include <png.h>
 #include <jpeglib.h>
 
-#define CLAMP(x)    ((x < 0) ? 0 : ((x > 255) ? 255 : x))
+#ifdef HAVE_LIBSWSCALE
+#include <libswscale/swscale.h>
+#endif
+
+enum output_format {
+	FMT_BMP,
+	FMT_PNG,
+	FMT_JPEG,
+};
+
+enum scale_mode {
+	SCALE_POINT,
+	SCALE_BICUBIC,
+};
+
+struct grab_options {
+	unsigned int flags;
+#define OSD_ENABLED	(1 << 0)
+#define VIDEO_ENABLED	(1 << 1)
+	bool use_osd_res;
+	enum output_format ofmt;
+	unsigned int jpg_quality;
+	bool no_aspect;
+	int width;
+	bool use_letterbox;
+	enum scale_mode scale_mode;
+};
+
+struct grab_ctx {
+	struct grab_options opt;
+};
+
+enum soc_type {
+	SOC_IBM_PALLAS,
+	SOC_IBM_VULCAN,
+	SOC_ATI_XILLEON,
+	SOC_BCM_7400,
+	SOC_BCM_7401,
+	SOC_BCM_7405,
+	SOC_UNKNOWN,
+};
+
+enum soc_vendor {
+	VENDOR_IBM,
+	VENDOR_ATI,
+	VENDOR_BCM,
+	VENDOR_UNKNOWN,
+};
+
+struct soc_info {
+	enum soc_type type;
+	enum soc_vendor vendor;
+	const char *name;
+};
+
+static const struct soc_info soc_info[] = {
+	[SOC_IBM_PALLAS] = { .vendor = VENDOR_IBM, .name = "Pallas" },
+	[SOC_IBM_VULCAN] = { .vendor = VENDOR_IBM, .name = "Vulcan" },
+	[SOC_ATI_XILLEON] = { .vendor = VENDOR_ATI, .name = "Xilleon" },
+	[SOC_BCM_7400] = { .vendor = VENDOR_BCM, .name = "BCM7400" },
+	[SOC_BCM_7401] = { .vendor = VENDOR_BCM, .name = "BCM7401" },
+	[SOC_BCM_7405] = { .vendor = VENDOR_BCM, .name = "BCM7405" },
+};
+
+struct size {
+	unsigned int x;
+	unsigned int y;
+};
+
+struct rect {
+	unsigned int top;
+	unsigned int left;
+	unsigned int width;
+	unsigned int height;
+};
+
+struct pixel {
+	unsigned int bits;
+	unsigned int bytes;
+};
+
+struct surface {
+	const char *name;
+	void *mem;
+	struct size res;
+	struct pixel pixel;
+	unsigned int npixels;
+	unsigned int stride;
+	unsigned int size;
+};
+
+struct pig_parameters {
+	bool enabled;
+	struct rect rect;
+};
+
+
 #define SWAP(x,y)	{ x ^= y; y ^= x; x ^= y; }
 
-#define RED565(x)    ((((x) >> (11 )) & 0x1f) << 3)
-#define GREEN565(x)  ((((x) >> (5 )) & 0x3f) << 2)
-#define BLUE565(x)   ((((x) >> (0)) & 0x1f) << 3)
+static inline unsigned int CLAMP(int x)
+{
+	return (x < 0) ? 0 : ((x > 255) ? 255 : x);
+}
 
-#define YFB(x)    ((((x) >> (10)) & 0x3f) << 2)
-#define CBFB(x)  ((((x) >> (6)) & 0xf) << 4)
-#define CRFB(x)   ((((x) >> (2)) & 0xf) << 4)
-#define BFFB(x)   ((((x) >> (0)) & 0x3) << 6)
+static inline unsigned int RED565(unsigned int x)
+{
+	return (((x >> 11) & 0x1f) << 3);
+}
+
+static inline unsigned int GREEN565(unsigned int x)
+{
+	return (((x >> 5) & 0x3f) << 2);
+}
+
+static inline unsigned int BLUE565(unsigned int x)
+{
+	return (((x >> 0) & 0x1f) << 3);
+}
+
+static inline unsigned int YFB(unsigned int x)
+{
+	return (((x >> 10) & 0x3f) << 2);
+}
+
+static inline unsigned int CBFB(unsigned int x)
+{
+	return (((x >> 6) & 0xf) << 4);
+}
+
+static inline unsigned int CRFB(unsigned int x)
+{
+	return (((x >> 2) & 0xf) << 4);
+}
+
+static inline unsigned int BFFB(unsigned int x)
+{
+	return (((x >> 0) & 0x3) << 6);
+}
 
 #define VIDEO_DEV "/dev/video"
 
@@ -79,8 +207,8 @@ static const int yuv2rgbtable_bv[256] = {
 0xFF33A280, 0xFF353B3B, 0xFF36D3F6, 0xFF386CB1, 0xFF3A056C, 0xFF3B9E27, 0xFF3D36E2, 0xFF3ECF9D, 0xFF406858, 0xFF420113, 0xFF4399CE, 0xFF453289, 0xFF46CB44, 0xFF4863FF, 0xFF49FCBA, 0xFF4B9575, 0xFF4D2E30, 0xFF4EC6EB, 0xFF505FA6, 0xFF51F861, 0xFF53911C, 0xFF5529D7, 0xFF56C292, 0xFF585B4D, 0xFF59F408, 0xFF5B8CC3, 0xFF5D257E, 0xFF5EBE39, 0xFF6056F4, 0xFF61EFAF, 0xFF63886A, 0xFF652125, 0xFF66B9E0, 0xFF68529B, 0xFF69EB56, 0xFF6B8411, 0xFF6D1CCC, 0xFF6EB587, 0xFF704E42, 0xFF71E6FD, 0xFF737FB8, 0xFF751873, 0xFF76B12E, 0xFF7849E9, 0xFF79E2A4, 0xFF7B7B5F, 0xFF7D141A, 0xFF7EACD5, 0xFF804590, 0xFF81DE4B, 0xFF837706, 0xFF850FC1, 0xFF86A87C, 0xFF884137, 0xFF89D9F2, 0xFF8B72AD, 0xFF8D0B68, 0xFF8EA423, 0xFF903CDE, 0xFF91D599, 0xFF936E54, 0xFF95070F, 0xFF969FCA, 0xFF983885, 0xFF99D140, 0xFF9B69FB, 0xFF9D02B6, 0xFF9E9B71, 0xFFA0342C, 0xFFA1CCE7, 0xFFA365A2, 0xFFA4FE5D, 0xFFA69718, 0xFFA82FD3, 0xFFA9C88E, 0xFFAB6149, 0xFFACFA04, 0xFFAE92BF, 0xFFB02B7A, 0xFFB1C435, 0xFFB35CF0, 0xFFB4F5AB, 0xFFB68E66, 0xFFB82721, 0xFFB9BFDC, 0xFFBB5897, 0xFFBCF152, 0xFFBE8A0D, 0xFFC022C8, 0xFFC1BB83, 0xFFC3543E, 0xFFC4ECF9, 0xFFC685B4, 0xFFC81E6F, 0xFFC9B72A, 0xFFCB4FE5, 0xFFCCE8A0, 0xFFCE815B, 0xFFD01A16, 0xFFD1B2D1, 0xFFD34B8C, 0xFFD4E447, 0xFFD67D02, 0xFFD815BD, 0xFFD9AE78, 0xFFDB4733, 0xFFDCDFEE, 0xFFDE78A9, 0xFFE01164, 0xFFE1AA1F, 0xFFE342DA, 0xFFE4DB95, 0xFFE67450, 0xFFE80D0B, 0xFFE9A5C6, 0xFFEB3E81, 0xFFECD73C, 0xFFEE6FF7, 0xFFF008B2, 0xFFF1A16D, 0xFFF33A28, 0xFFF4D2E3, 0xFFF66B9E, 0xFFF80459, 0xFFF99D14, 0xFFFB35CF, 0xFFFCCE8A, 0xFFFE6745, 0x0, 0x198BB, 0x33176, 0x4CA31, 0x662EC, 0x7FBA7, 0x99462, 0xB2D1D, 0xCC5D8, 0xE5E93, 0xFF74E, 0x119009, 0x1328C4, 0x14C17F, 0x165A3A, 0x17F2F5, 0x198BB0, 0x1B246B, 0x1CBD26, 0x1E55E1, 0x1FEE9C, 0x218757, 0x232012, 0x24B8CD, 0x265188, 0x27EA43, 0x2982FE, 0x2B1BB9, 0x2CB474, 0x2E4D2F, 0x2FE5EA, 0x317EA5, 0x331760, 0x34B01B, 0x3648D6, 0x37E191, 0x397A4C, 0x3B1307, 0x3CABC2, 0x3E447D, 0x3FDD38, 0x4175F3, 0x430EAE, 0x44A769, 0x464024, 0x47D8DF, 0x49719A, 0x4B0A55, 0x4CA310, 0x4E3BCB, 0x4FD486, 0x516D41, 0x5305FC, 0x549EB7, 0x563772, 0x57D02D, 0x5968E8, 0x5B01A3, 0x5C9A5E, 0x5E3319, 0x5FCBD4, 0x61648F, 0x62FD4A, 0x649605, 0x662EC0, 0x67C77B, 0x696036, 0x6AF8F1, 0x6C91AC, 0x6E2A67, 0x6FC322, 0x715BDD, 0x72F498, 0x748D53, 0x76260E, 0x77BEC9, 0x795784, 0x7AF03F, 0x7C88FA, 0x7E21B5, 0x7FBA70, 0x81532B, 0x82EBE6, 0x8484A1, 0x861D5C, 0x87B617, 0x894ED2, 0x8AE78D, 0x8C8048, 0x8E1903, 0x8FB1BE, 0x914A79, 0x92E334, 0x947BEF, 0x9614AA, 0x97AD65, 0x994620, 0x9ADEDB, 0x9C7796, 0x9E1051, 0x9FA90C, 0xA141C7, 0xA2DA82, 0xA4733D, 0xA60BF8, 0xA7A4B3, 0xA93D6E, 0xAAD629, 0xAC6EE4, 0xAE079F, 0xAFA05A, 0xB13915, 0xB2D1D0, 0xB46A8B, 0xB60346, 0xB79C01, 0xB934BC, 0xBACD77, 0xBC6632, 0xBDFEED, 0xBF97A8, 0xC13063, 0xC2C91E, 0xC461D9, 0xC5FA94, 0xC7934F, 0xC92C0A, 0xCAC4C5
 };
 
-static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yres);
-static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres);
+static bool getosd(struct surface *surface);
+static bool getvideo(struct grab_ctx *ctx, struct surface *surface);
 
 static void smooth_resize(const unsigned char *source, unsigned char *dest,
 			  unsigned int xsource, unsigned int ysource,
@@ -97,13 +225,31 @@ static void (*resize)(const unsigned char *source, unsigned char *dest,
 		      unsigned int xdest, unsigned int ydest,
 		      unsigned int colors);
 
-static void combine(unsigned char *output,
-		    const unsigned char *video, const unsigned char *osd,
-		    unsigned int xres, unsigned int yres);
+static void combine(struct surface *dest,
+		    const struct surface *front,
+		    const struct surface *back);
 
-enum {UNKNOWN,PALLAS,VULCAN,XILLEON,BRCM7401,BRCM7400,BRCM7405};
-static const char *stb_name[]={"unknown","Pallas","Vulcan","Xilleon","Brcm7401","Brcm7400","Brcm7405"};
-static int stb_type=UNKNOWN;
+static void combine_rect(struct surface *dest,
+			 const struct surface *front,
+			 const struct surface *back,
+			 const struct rect *rect);
+
+static enum soc_type soc_type = SOC_UNKNOWN;
+
+static inline enum soc_vendor soc_vendor(void)
+{
+	return soc_info[soc_type].vendor;
+}
+
+static inline const char *soc_name(void)
+{
+	return soc_info[soc_type].name;
+}
+
+static inline unsigned int udiv(unsigned int dividend, unsigned int divisor)
+{
+	return (dividend + (divisor / 2)) / divisor;
+}
 
 static const char *file_getline(const char *filename)
 {
@@ -183,26 +329,668 @@ static int file_scanf_lines(const char *filename, const char *fmt, ...)
 	return ret;
 }
 
+static void size_set_xy(struct size *s, unsigned int x, unsigned int y)
+{
+	s->x = x;
+	s->y = y;
+}
+
+static void pixel_set_bits(struct pixel *p, unsigned int bits)
+{
+	p->bits = bits;
+	p->bytes = (bits + 7) / 8;
+}
+
+static inline unsigned int surface_width(const struct surface *s)
+{
+	return s->res.x;
+}
+
+static inline unsigned int surface_height(const struct surface *s)
+{
+	return s->res.y;
+}
+
+static inline unsigned int surface_bpp(const struct surface *s)
+{
+	return s->pixel.bits;
+}
+
+static inline unsigned int surface_pixel_width(const struct surface *s)
+{
+	return s->pixel.bytes;
+}
+
+static void surface_update(struct surface *s)
+{
+	s->npixels = surface_width(s) * surface_height(s);
+	s->stride = surface_width(s) * surface_pixel_width(s);
+	s->size = s->stride * surface_height(s);
+}
+
+static void surface_set_size(struct surface *s, unsigned int width, unsigned int height)
+{
+	size_set_xy(&s->res, width, height);
+	surface_update(s);
+}
+
+static void surface_set_bpp(struct surface *s, unsigned int bpp)
+{
+	pixel_set_bits(&s->pixel, bpp);
+	surface_update(s);
+}
+
+static void surface_set_mem(struct surface *surface, void *mem)
+{
+	free(surface->mem);
+	surface->mem = mem;
+}
+
+static void surface_resize(struct surface *surface, unsigned int xres, unsigned int yres)
+{
+	void *dest;
+
+	if (surface_width(surface) == xres &&
+	    surface_height(surface) == yres)
+		return;
+
+	printf("Resizing %s to %dx%d\n", surface->name, xres, yres);
+
+	dest = malloc(xres * yres * surface_pixel_width(surface));
+	assert(dest);
+
+	resize(surface->mem, dest, surface_width(surface), surface_height(surface),
+	       xres, yres, surface_pixel_width(surface));
+
+	surface_set_mem(surface, dest);
+	surface_set_size(surface, xres, yres);
+}
+
+static void surface_alloc(struct surface *s)
+{
+	assert(!s->mem);
+	if (s->size) {
+		s->mem = malloc(s->size);
+		assert(s->mem);
+	}
+}
+
+static void surface_free(struct surface *s)
+{
+	if (s->mem) {
+		free(s->mem);
+		s->mem = NULL;
+	}
+}
+
+static void surface_init(struct surface *s, const char *name, unsigned int bpp)
+{
+	memset(s, 0, sizeof(struct surface));
+	s->name = name;
+	surface_set_bpp(s, bpp);
+}
+
+static bool brcm7400_do_dma_transfers(int mem_fd, unsigned long *descriptor,
+				      unsigned int address, unsigned int size)
+{
+	unsigned int block_size = DMA_BLOCKSIZE;
+	volatile unsigned long *mem_dma;
+	unsigned int i;
+
+	mem_dma = mmap(0, 0x1000, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, 0x10c02000);
+	if (mem_dma == MAP_FAILED) {
+		perror("mmap");
+		return false;
+	}
+
+	for (i = 0; i < size; i += block_size) {
+		if (block_size + i > size)
+			block_size = size - i;
+
+		descriptor[0] = /* READ */ address + i;
+		descriptor[1] = /* WRITE */ SPARE_RAM + 0x1000 + i;
+		descriptor[2] = 0x40000000 | /* LEN */ block_size;
+		descriptor[3] = 0;
+		descriptor[4] = 0;
+		descriptor[5] = 0;
+		descriptor[6] = 0;
+		descriptor[7] = 0;
+		mem_dma[1] = /* FIRST_DESCRIPTOR */ SPARE_RAM;
+		mem_dma[3] = /* DMA WAKE CTRL */ 3;
+		mem_dma[2] = 1;
+		while (mem_dma[5] == 1)
+			;
+		mem_dma[2] = 0;
+	}
+
+	munmap((void *)mem_dma, 0x1000);
+	return true;
+}
+
+#ifndef HAVE_LIBSWSCALE
+static void yuv2rgb(struct surface *surface,
+		    const unsigned char *luma, const unsigned char *chroma)
+{
+	const unsigned int xres = surface_width(surface);
+	const unsigned int yres = surface_height(surface);
+	const unsigned int pixel_width = surface_pixel_width(surface);
+	int Y, U, V, RU, GVU, BV;
+	unsigned int x, y;
+
+	// yuv2rgb conversion (4:2:0)
+	printf("... converting Video from YUV to RGB color space\n");
+
+	assert(!(xres & 1));
+	assert(!(yres & 1));
+
+	const unsigned char *luma1;
+	const unsigned char *luma2;
+
+	unsigned char *dest = surface->mem;
+	unsigned char *dest1;
+	unsigned char *dest2;
+
+	/* convert from NV21 to RGB24 or RGBA using 2x2 pixels at once */
+	for (y = 0; y < yres; y += 2) {
+		dest1 = dest;
+		dest += surface->stride;
+		dest2 = dest;
+		dest += surface->stride;
+
+		luma1 = luma;
+		luma += xres;
+		luma2 = luma;
+		luma += xres;
+
+		for (x = 0; x < xres; x += 2) {
+			U = chroma[0];
+			V = chroma[1];
+
+			// use lookup tables to speedup the whole thing
+			RU = yuv2rgbtable_ru[U];
+			GVU = yuv2rgbtable_gv[V] + yuv2rgbtable_gu[U];
+			BV = yuv2rgbtable_bv[V];
+
+			// on xilleon we use bgr instead of rgb so simply swap the coeffs
+			// - really? maybe we're using NV12 instead
+			if (soc_type == SOC_ATI_XILLEON)
+				SWAP(RU, BV);
+
+			// now we do 4 pixels on each iteration this is more code but much faster
+			Y = yuv2rgbtable_y[luma1[0]];
+			dest1[0] = CLAMP((Y + RU) >> 16);
+			dest1[1] = CLAMP((Y - GVU) >> 16);
+			dest1[2] = CLAMP((Y + BV) >> 16);
+			if (pixel_width == 4)
+				dest1[3] = 0xff;
+
+			Y = yuv2rgbtable_y[luma2[0]];
+			dest2[0] = CLAMP((Y + RU) >> 16);
+			dest2[1] = CLAMP((Y - GVU) >> 16);
+			dest2[2] = CLAMP((Y + BV) >> 16);
+			if (pixel_width == 4)
+				dest2[3] = 0xff;
+
+			dest1 += pixel_width;
+			dest2 += pixel_width;
+
+			Y = yuv2rgbtable_y[luma1[1]];
+			dest1[0] = CLAMP((Y + RU) >> 16);
+			dest1[1] = CLAMP((Y - GVU) >> 16);
+			dest1[2] = CLAMP((Y + BV) >> 16);
+			if (pixel_width == 4)
+				dest1[3] = 0xff;
+
+			Y = yuv2rgbtable_y[luma2[1]];
+			dest2[0] = CLAMP((Y + RU) >> 16);
+			dest2[1] = CLAMP((Y - GVU) >> 16);
+			dest2[2] = CLAMP((Y + BV) >> 16);
+			if (pixel_width == 4)
+				dest2[3] = 0xff;
+
+			dest1 += pixel_width;
+			dest2 += pixel_width;
+
+			luma1 += 2;
+			luma2 += 2;
+
+			chroma += 2;
+		}
+	}
+}
+#endif
+
+static void scale_nv21_to_rgb(struct grab_ctx *ctx,
+			      struct surface *surface,
+			      const unsigned char *luma,
+			      const unsigned char *chroma,
+			      unsigned int xres, unsigned int yres)
+{
+	unsigned int scale_width = surface_width(surface);
+	unsigned int scale_height = surface_height(surface);
+
+	// resize to specific width?
+	if (!(ctx->opt.flags & OSD_ENABLED)) {
+		unsigned int forced_width = ctx->opt.width;
+		if (forced_width > 0) {
+			printf("Force width\n");
+			assert(scale_width == 0);
+			assert(scale_height == 0);
+			scale_width = forced_width;
+			scale_height = yres * forced_width / xres;
+		}
+	}
+
+#ifdef HAVE_LIBSWSCALE
+	struct SwsContext *sws;
+	int flags;
+
+	if (scale_width == 0 || scale_height == 0) {
+		scale_width = xres;
+		scale_height = yres;
+	}
+
+	surface_set_size(surface, scale_width, scale_height);
+	surface_alloc(surface);
+
+	if (ctx->opt.scale_mode == SCALE_BICUBIC)
+		flags = SWS_BICUBIC;
+	else
+		flags = SWS_POINT;
+
+	sws = sws_getContext(xres, yres, PIX_FMT_NV21, surface_width(surface), surface_height(surface),
+			(surface_bpp(surface) == 24) ? PIX_FMT_RGB24 : PIX_FMT_RGBA,
+			flags | SWS_PRINT_INFO, NULL, NULL, NULL);
+	assert(sws);
+
+	const uint8_t * const src[] = { luma, chroma };
+	const int srcStride[] = { xres, xres };
+	uint8_t *const dst[] = { surface->mem };
+	const int dstStride[] = { surface->stride };
+
+	int ret = sws_scale(sws, src, srcStride, 0, yres, dst, dstStride);
+	printf("sws_scale returned %d\n", ret);
+
+	sws_freeContext(sws);
+#else
+	surface_set_size(surface, xres, yres);
+	surface_alloc(surface);
+
+	yuv2rgb(surface, luma, chroma);
+
+	if (((scale_width != 0) && (scale_height != 0)) && ((scale_width != xres) || (scale_height != yres)))
+		surface_resize(surface, scale_width, scale_height);
+#endif
+}
+
+static void memcpy_be32(void *dest, const void *src, size_t n)
+{
+	const unsigned int *wsrc = src;
+	unsigned int *wdest = dest;
+
+	n /= 4;
+
+	while (n >= 0x10) {
+		wdest[0x0] = bswap_32(wsrc[0x0]);
+		wdest[0x1] = bswap_32(wsrc[0x1]);
+		wdest[0x2] = bswap_32(wsrc[0x2]);
+		wdest[0x3] = bswap_32(wsrc[0x3]);
+		wdest[0x4] = bswap_32(wsrc[0x4]);
+		wdest[0x5] = bswap_32(wsrc[0x5]);
+		wdest[0x6] = bswap_32(wsrc[0x6]);
+		wdest[0x7] = bswap_32(wsrc[0x7]);
+		wdest[0x8] = bswap_32(wsrc[0x8]);
+		wdest[0x9] = bswap_32(wsrc[0x9]);
+		wdest[0xa] = bswap_32(wsrc[0xa]);
+		wdest[0xb] = bswap_32(wsrc[0xb]);
+		wdest[0xc] = bswap_32(wsrc[0xc]);
+		wdest[0xd] = bswap_32(wsrc[0xd]);
+		wdest[0xe] = bswap_32(wsrc[0xe]);
+		wdest[0xf] = bswap_32(wsrc[0xf]);
+		wdest += 0x10;
+		wsrc += 0x10;
+		n -= 0x10;
+	}
+
+	while (n--)
+		*wdest++ = bswap_32(*wsrc++);
+}
+
+static void bcm_get_luma_chroma(unsigned char *luma, unsigned char *chroma,
+				const unsigned char *memory,
+				unsigned int xres, unsigned int offset,
+				unsigned int ofs, unsigned int ofs2)
+{
+	unsigned int t = 0, dat1 = 0;
+	const unsigned int chr_luma_stride = (soc_type == SOC_BCM_7401) ? 0x40 : 0x80;
+	unsigned int stride = chr_luma_stride;
+	unsigned int t2 = 0;
+	unsigned int x, y;
+
+	assert(!(chr_luma_stride & 3));
+	assert(!(xres & 3));
+
+	// decode luma & chroma plane or lets say sort it
+	for (x = 0; x < xres; x += chr_luma_stride) {
+		if ((xres - x) < chr_luma_stride)
+			stride = xres - x;
+
+		dat1 = x;
+		for (y = 0; y < ofs; y++) {
+			memcpy_be32(luma + dat1, memory + t, stride); // luma
+			t += chr_luma_stride;
+
+			if (y < ofs2) {
+				memcpy_be32(chroma + dat1, memory + offset + t2, stride); // chroma
+				t2 += chr_luma_stride;
+			}
+
+			dat1 += xres;
+		}
+	}
+}
+
+static bool bcm_get_video(struct grab_ctx *ctx,
+			  struct surface *surface, int mem_fd,
+			  unsigned int xres, unsigned int yres)
+{
+	unsigned char data[0x30];
+	unsigned int memory2[0x30/4];
+
+	// grab brcm7401 pic from decoder memory
+	void *memory = mmap(0, 100, PROT_READ, MAP_SHARED, mem_fd, 0x10100000);
+	if (memory == MAP_FAILED) {
+		perror("mmap");
+		return false;
+	}
+
+	memcpy(data, memory, 0x30);
+	munmap(memory, 0x30);
+
+	memcpy(memory2, data, 0x30);
+
+	unsigned int feeder_cntl = memory2[0x04/4] & 0xf;
+	unsigned int fixed_colour = memory2[0x08/4] & 0xffffff;
+	unsigned int lac_cntl = memory2[0x0c/4] = 0x7ff;
+	unsigned int stride = memory2[0x10/4];
+	unsigned int disp_hsize = memory2[0x14/4] & 0x1fff;
+	unsigned int picture0_disp_vert_window = memory2[0x18/4] & 0x1fff1fff;
+	unsigned int picture0_line_addr_0 = memory2[0x1c/4];	// LUMA_ADDR
+	unsigned int picture0_line_addr_1 = memory2[0x20/4];	// CHROMA_ADDR
+	unsigned int chroma_sampling_cntl = memory2[0x24/4] & 0x1;
+	unsigned int luma_nmby = memory2[0x28/4] & 0x3ff;
+	unsigned int chroma_nmby = memory2[0x2c/4] & 0x3ff;
+
+	if (feeder_cntl & 1) {
+		printf("unsupported image format (packed)\n");
+		return false;
+	}
+
+	printf("packing_type=%d image_format=%d\n", (feeder_cntl >> 1) & 3, feeder_cntl & 1);
+
+	// AVC_MPEG
+	printf("stripe_width_sel=%d skip_line_size=%d chroma_vert_position=%d\n"
+		"chroma_interpolation=%d output_field_polarity=%d output_type=%d chroma_type=%d\n",
+		(lac_cntl >> 10) & 1,
+		(lac_cntl >> 6) & 0xf,
+		(lac_cntl >> 4) & 1,
+		(lac_cntl >> 3) & 1,
+		(lac_cntl >> 2) & 1,
+		(lac_cntl >> 1) & 1,
+		(lac_cntl >> 0) & 1);
+
+	unsigned int chroma_line_stride;
+	unsigned int luma_line_stride;
+	if (soc_type == SOC_BCM_7400 ||  soc_type == SOC_BCM_7401) {
+		chroma_line_stride = (stride >> 8) & 0xff;
+		luma_line_stride = (stride >> 0) & 0xff;
+	} else {
+		chroma_line_stride = (stride >> 16) & 0xffff;
+		luma_line_stride = (stride >> 16) & 0xffff;
+	}
+
+	printf("luma_line_stride=%d chroma_line_stride=%d luma_nmby=%d chroma_nmby=%d\n",
+		luma_line_stride, chroma_line_stride,
+		luma_nmby * 16, chroma_nmby * 16);
+
+	// LUMA_NMBY
+	unsigned int ofs = (data[0x28]<<8|data[0x27])>>4;
+	// CHROMA_NMBY
+	unsigned int ofs2 = (data[0x2c]<<8|data[0x2b])>>4;
+	// PICTURE0_LINE_ADDR_0
+	unsigned int addr0 = (data[0x1f]<<24|data[0x1e]<<16|data[0x1d]<<8|data[0x1c])&0xFFFFFF00;
+	// PICTURE0_LINE_ADDR_1
+	unsigned int addr1 = (data[0x23]<<24|data[0x22]<<16|data[0x21]<<8|data[0x20])&0xFFFFFF00;
+	unsigned int offset = addr1 - addr0;
+	// DISP_HSIZE
+	assert(xres == (unsigned int)(data[0x15]<<8|data[0x14]));
+
+	printf("addr0: %X addr1: %X OFS: %d %d\n",addr0,addr1,ofs,ofs2);
+
+	unsigned char *luma = malloc(xres * ofs);
+	assert(luma);
+	unsigned char *chroma = malloc(xres * ofs2);
+	assert(chroma);
+
+	unsigned int size = offset + xres * ofs2;
+
+	// grabbing luma & chroma plane from the decoder memory
+	if (soc_type == SOC_BCM_7400) {
+		// on dm8000 we have to use dma, so dont change anything here until you really know what you are doing !
+		memory = mmap(0, size + 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, SPARE_RAM);
+		if (memory == MAP_FAILED) {
+			perror("mmap");
+			return false;
+		}
+
+		if (!brcm7400_do_dma_transfers(mem_fd, (unsigned long *)memory, addr0, size)) {
+			munmap(memory, size + 0x1000);
+			return false;
+		}
+
+		memory += 0x1000;
+	} else /* if (soc_type == SOC_BCM_7401 || soc_type == SOC_BCM_7405) */ {
+		// on dm800/dm500hd we have direct access to the decoder memory
+		memory = mmap(0, size, PROT_READ, MAP_SHARED, mem_fd, addr0);
+		if (memory == MAP_FAILED) {
+			perror("mmap");
+			return false;
+		}
+
+		usleep(50000); 	// we try to get a full picture, its not possible to get a sync from the decoder so we use a delay
+				// and hope we get a good timing. dont ask me why, but every DM800 i tested so far produced a good
+				// result with a 50ms delay
+	}
+
+	bcm_get_luma_chroma(luma, chroma, memory, xres, offset, ofs, ofs2);
+
+	if (soc_type == SOC_BCM_7401 || soc_type == SOC_BCM_7405)
+		munmap(memory, size);
+	else /* if (soc_type == SOC_BCM_7400) */ {
+		memory -= 0x1000;
+		munmap(memory, size + 0x1000);
+	}
+
+	scale_nv21_to_rgb(ctx, surface, luma, chroma, xres, yres);
+
+	free(luma);
+	free(chroma);
+
+	return true;
+}
+
+static bool ati_get_video(struct grab_ctx *ctx,
+			  struct surface *surface, int mem_fd,
+			  unsigned int xres, unsigned int yres)
+{
+	// grab xilleon pic from decoder memory
+	unsigned char *memory = mmap(0, 1920*1152*6, PROT_READ, MAP_SHARED, mem_fd, 0x6000000);
+	if (memory == MAP_FAILED) {
+		perror("mmap");
+		return false;
+	}
+
+	unsigned char *luma = malloc(1920 * 1152);
+	assert(luma);
+	unsigned char *chroma = malloc(1920 * 576);
+	assert(chroma);
+	unsigned char *frame_l = malloc(1920 * 1080); // luma frame from video decoder
+	assert(frame_l);
+	unsigned char *frame_c = malloc(1920 * 540); // chroma frame from video decoder
+	assert(frame_c);
+
+	unsigned int offset = 1920 * 1152 * 5;	// offset for chroma buffer
+
+	// grab luma buffer from decoder memory	
+	memcpy(frame_l,memory,1920*1080); 
+	// grab chroma buffer from decoder memory
+	memcpy(frame_c,memory+offset,1920*540);
+
+	munmap(memory, 1920*1152*6);
+
+	unsigned int xtmp, ytmp, xsub, ysub;
+	const unsigned int ypart = 32;
+	const unsigned int xpart = 128;
+	unsigned int t = 0, t2 = 0, odd_even = 0;
+	int oe2 = 0;
+
+	// "decode" luma/chroma, there are 128x32pixel blocks inside the decoder mem
+	for (ysub=0; ysub<(yres/32)+1; ysub++) 
+	{
+		for (xsub=0; xsub<15; xsub++) // 1920/128=15
+		{
+			for (ytmp=0; ytmp<ypart; ytmp++)
+			{
+				for (xtmp=0; xtmp< xpart; xtmp++)
+				{
+					if (odd_even == 0)
+						oe2=0;
+					if (odd_even == 1 && xtmp < 64)
+						oe2=64;
+					if (odd_even == 1 && xtmp >= 64)
+						oe2=-64;
+					if (xsub*xpart+xtmp+oe2 < xres) 
+						memcpy(luma+((xsub*xpart+oe2))+xtmp+(xres*(ytmp+(ysub*ypart))),frame_l+t,1); // luma
+					if (ysub < (yres/64)+1)
+					{
+						if (xsub*xpart+xtmp+oe2 < xres) 
+							memcpy(chroma+((xsub*xpart+oe2))+xtmp+(xres*(ytmp+(ysub*ypart))),frame_c+t,1); // chroma
+						t2++;
+					}
+					t++;
+				}
+			}
+		}
+		odd_even^=1;
+	}
+
+	scale_nv21_to_rgb(ctx, surface, luma, chroma, xres, yres);
+
+	free(frame_l);
+	free(frame_c);
+	free(luma);
+	free(chroma);
+
+	return true;
+}
+
+static bool devmem_get_video(struct grab_ctx *ctx, struct surface *surface)
+{
+	unsigned int xres, yres;
+	bool ret;
+
+	if (file_scanf_line("/proc/stb/vmpeg/0/xres", "%x", &xres) != 1)
+		return false;
+	if (file_scanf_line("/proc/stb/vmpeg/0/yres", "%x", &yres) != 1)
+		return false;
+
+	int fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (fd < 0) {
+		perror("/dev/mem");
+		return false;
+	}
+
+	if (soc_type == SOC_ATI_XILLEON)
+		ret = ati_get_video(ctx, surface, fd, xres, yres);
+	else
+		ret = bcm_get_video(ctx, surface, fd, xres, yres);
+
+	close(fd);
+	return ret;
+}
+
+static bool devvideo_get_video(struct grab_ctx *ctx, struct surface *surface)
+{
+	// grab via v4l device
+	unsigned char *mem;
+	const unsigned char *luma, *chroma;
+	const unsigned int *header;
+	unsigned int xres, yres, size;
+	int fd;
+	ssize_t ret;
+
+	fd = open(VIDEO_DEV, O_RDONLY);
+	if (fd < 0) {
+		perror(VIDEO_DEV);
+		return false;
+	}
+
+	size = 720 * 576 * 3;
+	mem = malloc(size);
+	assert(mem);
+
+	ret = read(fd, mem, size);
+	if (ret < 0)
+		perror("read");
+	close(fd);
+	if (ret < 16) {
+		fprintf(stderr, "short read\n");
+		return false;
+	}
+
+	header = (unsigned int *)mem;
+	xres = header[0];
+	yres = header[1];
+
+	size = xres * yres * 3;
+	luma = &mem[16];
+	chroma = &mem[16 + size];
+
+	scale_nv21_to_rgb(ctx, surface, luma, chroma, xres, yres);
+
+	free(mem);
+
+	return true;
+}
+
 // main program
 
-int main(int argc, char **argv) {
+static void grab_ctx_init(struct grab_ctx *ctx)
+{
+	struct grab_options *opt = &ctx->opt;
+
+	memset(ctx, 0, sizeof(struct grab_ctx));
+
+	opt->flags = OSD_ENABLED | VIDEO_ENABLED;
+	opt->ofmt = FMT_BMP;
+	// we use fast resize as standard now
+	opt->scale_mode = SCALE_POINT;
+	opt->jpg_quality = 50;
+}
+
+int main(int argc, char **argv)
+{
+	char filename[256] = { "/tmp/screenshot.bmp" };
+	struct grab_ctx ctx;
+	struct grab_options *opt = &ctx.opt;
+	struct pig_parameters pig;
+	struct surface osd;
+	struct surface video;
+	int c;
 
 	printf("AiO Dreambox Screengrabber " PACKAGE_VERSION "\n\n");
 
-	unsigned int xres_v = 0,yres_v = 0,xres_o,yres_o,xres,yres,aspect,width;
-	int c,osd_only,video_only,use_osd_res,use_png,use_jpg,jpg_quality,no_aspect,use_letterbox;
-
-	// we use fast resize as standard now
-	resize = &fast_resize;
-
-	osd_only=video_only=use_osd_res=width=use_png=use_jpg=no_aspect=use_letterbox=0;
-	jpg_quality=50;
-	aspect=1;
-
-	unsigned char *video, *osd, *output;
-	unsigned int output_bytes = 3;
-
-	char filename[256] = { "/tmp/screenshot.bmp" };
+	grab_ctx_init(&ctx);
 
 	// detect STB
 	const char *line = file_getline("/proc/fb");
@@ -214,852 +1002,569 @@ int main(int argc, char **argv) {
 		if (line == NULL)
 			return 1;
 		if (!strcmp(line, "dm8000"))
-			stb_type = BRCM7400;
+			soc_type = SOC_BCM_7400;
 		else if (!strcmp(line, "dm800"))
-			stb_type = BRCM7401;
+			soc_type = SOC_BCM_7401;
 		else if (!strcmp(line, "dm500hd") ||
 			 !strcmp(line, "dm800se") ||
 			 !strcmp(line, "dm7020hd"))
-			stb_type = BRCM7405;
+			soc_type = SOC_BCM_7405;
 	} else if (strstr(line, "xilleonfb")) {
-		stb_type = XILLEON;
+		soc_type = SOC_ATI_XILLEON;
 	} else if (strstr(line, "Pallas FB")) {
-		stb_type = PALLAS;
+		soc_type = SOC_IBM_PALLAS;
 	} else if (strstr(line, "vulcanfb")) {
-		stb_type = VULCAN;
+		soc_type = SOC_IBM_VULCAN;
 	}
 
-	if (stb_type == UNKNOWN) {
-		printf("Unknown STB .. quit.\n");
+	if (soc_type == SOC_UNKNOWN) {
+		printf("Unknown SoC .. quit.\n");
 		return 1;
 	}
 
-	printf("Detected STB: %s\n",stb_name[stb_type]);
+	printf("SoC: %s\n", soc_name());
 
 	// process command line
-	while ((c = getopt (argc, argv, "dhj:lbnopr:v")) != -1)
-	{
-		switch (c)
-		{
-			case 'h':
-			case '?':
-				printf("Usage: grab [commands] [filename]\n\n");
-				printf("command:\n");
-				printf("-o only grab osd (framebuffer) when using this with png or bmp\n   fileformat you will get a 32bit pic with alphachannel\n");
-				printf("-v only grab video\n");
-				printf("-d always use osd resolution (good for skinshots)\n");
-				printf("-n dont correct 16:9 aspect ratio\n");
-				printf("-r (size) resize to a fixed width, maximum: 1920\n");
-				printf("-l always 4:3, create letterbox if 16:9\n");
-				printf("-b use bicubic picture resize (slow but smooth)\n");
-				printf("-j (quality) produce jpg files instead of bmp (quality 0-100)\n");	
-				printf("-p produce png files instead of bmp\n");
-				printf("-h this help screen\n\n");
-
-				printf("If no command is given the complete picture will be grabbed.\n");
-				printf("If no filename is given /tmp/screenshot.[bmp/jpg/png] will be used.\n");
-				return 0;
-				break;
-			case 'o': // OSD only
-				osd_only=1;
-				video_only=0;	
-				break;
-			case 'v': // Video only
-				video_only=1;
-				osd_only=0;
-				break;
-			case 'd': // always use OSD resolution
-				use_osd_res=1;
-				no_aspect=1;
-				break;
-			case 'r': // use given resolution
-				width=atoi(optarg);
-				if (width > 1920)
-				{
-					printf("Error: -r (size) ist limited to 1920 pixel !\n");
-					return 1;
-				}
-				break;
-			case 'l': // create letterbox
-				use_letterbox=1;
-				break;
-			case 'b': // use bicubic resizing
-				resize = &smooth_resize;
-				break;			
-			case 'p': // use png file format
-				use_png=1;
-				use_jpg=0;	
-				strcpy(filename,"/tmp/screenshot.png");
-				break;
-			case 'j': // use jpg file format
-				use_jpg=1;
-				use_png=0;
-				jpg_quality=atoi(optarg);
-				strcpy(filename,"/tmp/screenshot.jpg");
-				break;
-			case 'n':
-				no_aspect=1;
-				break;
-		} 
+	while ((c = getopt(argc, argv, "dhj:lbnopr:v")) != -1) {
+		switch (c) {
+		case 'h':
+		case '?':
+			printf("Usage: grab [options] [filename]\n\n");
+			printf("options:\n");
+			printf("-o only grab osd (framebuffer) when using this with png or bmp\n   fileformat you will get a 32bit pic with alphachannel\n");
+			printf("-v only grab video\n");
+			printf("-d always use osd resolution (good for skinshots)\n");
+			printf("-n dont correct 16:9 aspect ratio\n");
+			printf("-r (size) resize to a fixed width, maximum: 1920\n");
+			printf("-l always 4:3, create letterbox if 16:9\n");
+			printf("-b use bicubic picture resize (slow but smooth)\n");
+			printf("-j (quality) produce jpg files instead of bmp (quality 0-100)\n");
+			printf("-p produce png files instead of bmp\n");
+			printf("-h this help screen\n\n");
+			printf("If no command is given the complete picture will be grabbed.\n");
+			printf("If no filename is given /tmp/screenshot.[bmp/jpg/png] will be used.\n");
+			return 0;
+		case 'o': // OSD only
+			opt->flags &= ~VIDEO_ENABLED;
+			break;
+		case 'v': // Video only
+			opt->flags &= ~OSD_ENABLED;
+			break;
+		case 'd': // always use OSD resolution
+			opt->use_osd_res = true;
+			opt->no_aspect = true;
+			break;
+		case 'r': // use given resolution
+			opt->width = atoi(optarg);
+			if (opt->width < 0 || opt->width > 1920) {
+				printf("Error: -r (width) is limited to 0..1920 pixels!\n");
+				return 1;
+			}
+			break;
+		case 'l': // create letterbox
+			opt->use_letterbox = true;
+			break;
+		case 'b': // use bicubic resizing
+			opt->scale_mode = SCALE_BICUBIC;
+			break;
+		case 'p': // use png file format
+			opt->ofmt = FMT_PNG;
+			strcpy(filename, "/tmp/screenshot.png");
+			break;
+		case 'j': // use jpg file format
+			opt->ofmt = FMT_JPEG;
+			opt->jpg_quality = atoi(optarg);
+			strcpy(filename, "/tmp/screenshot.jpg");
+			break;
+		case 'n':
+			opt->no_aspect = true;
+			break;
+		}
 	}
+
 	if (optind < argc) // filename
 		strcpy(filename, argv[optind]);
 
-	unsigned int mallocsize = 1920 * 1080;
-	if (stb_type == VULCAN || stb_type == PALLAS)
-		mallocsize = 720 * 576;
+	if (!(opt->flags & (OSD_ENABLED | VIDEO_ENABLED))) {
+		fprintf(stderr, "Error: Invalid options specified.\n");
+		return 1;
+	}
 
-	video = malloc(mallocsize * 3);
-	assert(video);
-	osd = malloc(mallocsize * 4);
-	assert(osd);
+	if (opt->scale_mode == SCALE_BICUBIC)
+		resize = &smooth_resize;
+	else
+		resize = &fast_resize;
 
-	if ((stb_type == VULCAN || stb_type == PALLAS) && width > 720)
-		mallocsize = width * (width * 0.8 + 1);
-	
-	output = malloc(mallocsize * 4);
-	assert(output);
+	pig.rect.top = 0;
+	pig.rect.left = 0;
+	pig.rect.width = 720;
+	pig.rect.height = 576;
+	pig.enabled = false;
+
+	surface_init(&osd, "osd", 32);
 
 	// get osd
-	xres_o = yres_o = 0;
-	if (!video_only && !getosd(osd, &xres_o, &yres_o))
-		return 1;
+	if (opt->flags & OSD_ENABLED) {
+		if (!getosd(&osd))
+			return 1;
+
+		if (opt->width)
+			surface_resize(&osd, opt->width,
+				surface_height(&osd) * opt->width / surface_width(&osd));
+
+		// get PIG coordinates
+		if (soc_vendor() == VENDOR_BCM) {
+			file_scanf_line("/proc/stb/vmpeg/0/dst_top", "%x", &pig.rect.top);
+			file_scanf_line("/proc/stb/vmpeg/0/dst_left", "%x", &pig.rect.left);
+			file_scanf_line("/proc/stb/vmpeg/0/dst_height", "%x", &pig.rect.height);
+			file_scanf_line("/proc/stb/vmpeg/0/dst_width", "%x", &pig.rect.width);
+		}
+
+		if (pig.rect.top != 0 ||
+		    pig.rect.left != 0 ||
+		    pig.rect.width != 720 ||
+		    pig.rect.height != 576)
+			pig.enabled = true;
+	}
+
+	// scale video coordinates to OSD size
+	pig.rect.top = udiv(pig.rect.top * surface_height(&osd), 576);
+	pig.rect.left = udiv(pig.rect.left * surface_width(&osd), 720);
+	pig.rect.height = udiv(pig.rect.height * surface_height(&osd), 576);
+	pig.rect.width = udiv(pig.rect.width * surface_width(&osd), 720);
 
 	// get video
-	if (!osd_only && !getvideo(video, &xres_v, &yres_v))
-		return 1;
+	surface_init(&video, "video", pig.enabled ? 32 : 24);
 
-	// get aspect ratio
-	if (stb_type == VULCAN || stb_type == PALLAS)
-		file_scanf_lines("/proc/bus/bitstream", "A_RATIO: %d", &aspect);
-	else
-		file_scanf_line("/proc/stb/vmpeg/0/aspect", "%x", &aspect);
+	if (opt->flags & VIDEO_ENABLED) {
+		if (opt->flags & OSD_ENABLED) {
+			if (pig.enabled)
+				surface_set_size(&video, pig.rect.width, pig.rect.height);
+			else if (opt->use_osd_res || opt->width)
+				surface_set_size(&video, surface_width(&osd), surface_height(&osd));
+		}
 
-	// resizing
- 	if (video_only)
-	{
-		xres=xres_v;
-		yres=yres_v;
-	} else if (osd_only)
-	{
-		xres=xres_o;
-		yres=yres_o;
-	} else if (xres_o == xres_v && yres_o == yres_v)
-	{
-		xres=xres_v;
-		yres=yres_v;
-	} else
-	{
-		if (xres_v > xres_o && !use_osd_res && (width == 0 || width > xres_o))
-		{
-			// resize osd to video size
-			printf("Resizing OSD to %d x %d ...\n",xres_v,yres_v);	
-			resize(osd,output,xres_o,yres_o,xres_v,yres_v,4);
-			memcpy(osd,output,xres_v*yres_v*4);
-			xres=xres_v;
-			yres=yres_v;
-		} else
-		{
-			// resize video to osd size
-			printf("Resizing Video to %d x %d ...\n",xres_o,yres_o);	
-			resize(video,output,xres_v,yres_v,xres_o,yres_o,3);
-			memcpy(video,output,xres_o*yres_o*3);
-			xres=xres_o;
-			yres=yres_o;
-		}	
+		if (!getvideo(&ctx, &video))
+			return 1;
+
+		printf("... Video-Size: %d x %d\n",
+			surface_width(&video), surface_height(&video));
+
+		// resize osd to video size or vice versa
+		if ((opt->flags & OSD_ENABLED) && !pig.enabled && !opt->use_osd_res && !opt->width) {
+			if (surface_width(&video) > surface_width(&osd))
+				surface_resize(&osd, surface_width(&video), surface_height(&video));
+			else
+				surface_resize(&video, surface_width(&osd), surface_height(&osd));
+		}
 	}
-	
 
 	// merge video and osd if neccessary
-	if (osd_only)
-	{
-		memcpy(output,osd,xres*yres*4);
-		output_bytes=4;
+	struct surface *surface = (opt->flags & OSD_ENABLED) ? &osd : &video;
+	struct size *res = &surface->res;
+	if ((opt->flags & (OSD_ENABLED | VIDEO_ENABLED)) == (OSD_ENABLED | VIDEO_ENABLED)) {
+		if (pig.enabled)
+			combine_rect(surface, &osd, &video, &pig.rect);
+		else
+			combine(surface, &osd, &video);
 	}
-	else if (video_only)
-		memcpy(output,video,xres*yres*3);
-	else 
-	{
-		printf("Merge Video with Framebuffer ...\n");
-		combine(output,video,osd,xres,yres);
-	}
-
-	
-	// resize to specific width ?
-	if (width)
-	{
-		printf("Resizing Screenshot to %d x %d ...\n",width,yres*width/xres);
-		resize(output,osd,xres,yres,width,(yres*width/xres),output_bytes);
-		yres=yres*width/xres;
-		xres=width;
-		memcpy(output,osd,xres*yres*output_bytes);
-	}
-	
 
 	// correct aspect ratio
-	if (!no_aspect && aspect == 3 && ((float)xres/(float)yres)<1.5)
-	{
-		printf("Correct aspect ratio to 16:9 ...\n");
-		resize(output,osd,xres,yres,xres,yres/1.42,output_bytes);
-		yres/=1.42;
-		memcpy(output,osd,xres*yres*output_bytes);
+	if (!opt->no_aspect && ((res->x * 2) / res->y) < 3) {	/* x/y < 1.5 */
+		unsigned int aspect = 1;
+		if (soc_type == SOC_IBM_VULCAN || soc_type == SOC_IBM_PALLAS)
+			file_scanf_lines("/proc/bus/bitstream", "A_RATIO: %d", &aspect);
+		else
+			file_scanf_line("/proc/stb/vmpeg/0/aspect", "%x", &aspect);
+
+		if (aspect == 3) {
+			printf("Correct aspect ratio to 16:9 ...\n");
+			surface_resize(surface, res->x, udiv(res->y * 50, 71));	/* res->y / 1.42 */
+		}
 	}
 
 	// use letterbox ?
-	if (use_letterbox && xres*0.8 != yres && xres*0.8 <= 1080)
-	{
-		unsigned int yres_neu = xres * 0.8;
-		printf("Create letterbox %d x %d ...\n",xres,yres_neu);		
-		if (yres_neu > yres) {
-			unsigned int ofs = (yres_neu - yres) >> 1;
-			memmove(output+ofs*xres*output_bytes,output,xres*yres*output_bytes);
-			memset(output,0,ofs*xres*output_bytes);
-			memset(output+ofs*xres*3+xres*yres*output_bytes,0,ofs*xres*output_bytes);
+	if (opt->use_letterbox && res->x * 0.8 != res->y && res->x * 0.8 <= 1080) {
+		unsigned int yres_new = res->x * 0.8;
+		printf("Create letterbox %d x %d ...\n", res->x, yres_new);
+		if (yres_new > res->y) {
+			unsigned char *mem = malloc(surface->stride * yres_new);
+			assert(mem);
+			unsigned int top = (yres_new - res->y) / 2;
+			unsigned int top_size = top * surface->stride;
+			unsigned int bottom_size = (yres_new - (top + res->y)) * surface->stride;
+			memset(&mem[0], 0, top_size);
+			memcpy(&mem[top_size], surface->mem, surface->size);
+			memset(&mem[top_size + surface->size], 0, bottom_size);
+			assert(top_size + surface->size + bottom_size == surface->stride * yres_new);
+			surface_set_mem(surface, mem);
+			surface_set_size(surface, res->x, yres_new);
 		}
-		yres = yres_neu;
 	}
 
 	// saving picture
-	printf("Saving %d bit %s ...\n",(use_jpg?3*8:output_bytes*8),filename);
-	FILE *fd2 = fopen(filename, "wr");
+	printf("Saving %d-bit %s\n", (opt->ofmt == FMT_JPEG) ? 24 : surface_bpp(surface), filename);
+	FILE *fd2 = fopen(filename, "w");
 	if (!fd2) {
 		perror(filename);
 		return 1;
 	}
 
-	if (!use_png && !use_jpg)
-	{
+	if (opt->ofmt == FMT_BMP) {
 		// write bmp
 		unsigned char hdr[14 + 40];
 		unsigned int i = 0;
+		unsigned int n = (surface->size + 3) & ~3;
 #define PUT32(x) hdr[i++] = ((x)&0xFF); hdr[i++] = (((x)>>8)&0xFF); hdr[i++] = (((x)>>16)&0xFF); hdr[i++] = (((x)>>24)&0xFF);
 #define PUT16(x) hdr[i++] = ((x)&0xFF); hdr[i++] = (((x)>>8)&0xFF);
 #define PUT8(x) hdr[i++] = ((x)&0xFF);
 		PUT8('B'); PUT8('M');
-		PUT32((((xres * yres) * 3 + 3) &~ 3) + 14 + 40);
+		PUT32(n + 14 + 40);
 		PUT16(0); PUT16(0); PUT32(14 + 40);
-		PUT32(40); PUT32(xres); PUT32(yres);
+		PUT32(40); PUT32(res->x); PUT32(res->y);
 		PUT16(1);
-		PUT16(output_bytes*8); // bits
+		PUT16(surface_bpp(surface));
 		PUT32(0); PUT32(0); PUT32(0); PUT32(0); PUT32(0); PUT32(0);
 #undef PUT32
 #undef PUT16
 #undef PUT8
 		fwrite(hdr, 1, i, fd2);
-		
-		int y;
-		for (y=yres-1; y>=0 ; y-=1) {
-			fwrite(output+(y*xres*output_bytes),xres*output_bytes,1,fd2);
-		}
-	} else if (use_png)
-	{	
+		fwrite(surface->mem, n, 1, fd2);
+	} else if (opt->ofmt == FMT_PNG) {
 		// write png
 		png_bytep *row_pointers;
 		png_structp png_ptr;
 		png_infop info_ptr;
-	  
+
 		png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, (png_voidp)NULL, (png_error_ptr)NULL, (png_error_ptr)NULL);
 		info_ptr = png_create_info_struct(png_ptr);
 		png_init_io(png_ptr, fd2);
 
-		row_pointers = malloc(sizeof(png_bytep) * yres);
+		row_pointers = malloc(sizeof(png_bytep) * res->y);
 		assert(row_pointers);
 
+		unsigned char *mem = surface->mem;
 		unsigned int y;
-		for (y=0; y<yres; y++)
-			row_pointers[y]=output+(y*xres*output_bytes);
-		
+		for (y = 0; y < res->y; y++) {
+			row_pointers[y] = mem;
+			mem += surface->stride;
+		}
+
 		png_set_bgr(png_ptr);
-		png_set_IHDR(png_ptr, info_ptr, xres, yres, 8, ((output_bytes<4)?PNG_COLOR_TYPE_RGB:PNG_COLOR_TYPE_RGBA) , PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+		png_set_IHDR(png_ptr, info_ptr, res->x, res->y, 8,
+			(surface_pixel_width(surface) < 4) ? PNG_COLOR_TYPE_RGB : PNG_COLOR_TYPE_RGBA,
+			PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
 		png_write_info(png_ptr, info_ptr);
 		png_write_image(png_ptr, row_pointers);
 		png_write_end(png_ptr, info_ptr);
 		png_destroy_write_struct(&png_ptr, &info_ptr);
-		
 		free(row_pointers);
-	} else 
-	{
+	} else if (opt->ofmt == FMT_JPEG) {
 		// write jpg
-		unsigned int x,y,xres1,xres2,x2;
-		if (output_bytes == 3) // swap bgr<->rgb
-		{
-			for (y=0; y<yres; y++)
-			{
-				xres1=y*xres*3;
-				xres2=xres1+2;
-				for (x=0; x<xres; x++)
-				{
-					x2=x*3;
-					SWAP(output[x2+xres1],output[x2+xres2]);
-				}
+		//unsigned int x,y,xres1,xres2,x2;
+		if (surface_pixel_width(surface) == 3) { // swap bgr<->rgb
+			unsigned char *mem = surface->mem;
+			unsigned int i;
+			for (i = 0; i < surface->npixels; i++) {
+				SWAP(mem[0], mem[2]);
+				mem += 3;
 			}
-		}
-		else // swap bgr<->rgb and eliminate alpha channel jpgs are always saved with 24bit without alpha channel
-		{
-			for (y=0; y<yres; y++)
-			{
-				xres1=y*xres*3;
-				xres2=xres1+2;				
-				for (x=0; x<xres; x++)
-				{
-					x2=x*3;
-					memcpy(output+x2+xres1,output+x*4+y*xres*4,3);
-					SWAP(output[x2+xres1],output[x2+xres2]);
-				}
+		} else { // swap bgr<->rgb and eliminate alpha channel jpgs are always saved with 24bit without alpha channel
+			unsigned char *mem_rgb = surface->mem;
+			unsigned char *mem_rgba = surface->mem;
+			unsigned int i;
+	
+			// 0 1 2  3 4 5  6 7 8  9 a b
+			// R G B    R G  B   R  G B
+			// B G R  B G R  B G R  B G R
+
+			SWAP(mem_rgb[0], mem_rgb[2]);
+			mem_rgb[3] = mem_rgb[6];
+			SWAP(mem_rgb[4], mem_rgb[5]);
+			mem_rgb += 6;
+			mem_rgba += 8;
+			for (i = 2; i < surface->npixels; i++) {
+				mem_rgb[0] = mem_rgba[2];
+				mem_rgb[1] = mem_rgba[1];
+				mem_rgb[2] = mem_rgba[0];
+				mem_rgb += 3;
+				mem_rgba += 4;
 			}
+
+			surface_set_bpp(surface, 24);
 		}
 
 		struct jpeg_compress_struct cinfo;
 		struct jpeg_error_mgr jerr;
-		JSAMPROW row_pointer[1];	
-		unsigned int row_stride;		
-		cinfo.err = jpeg_std_error(&jerr);
 
+		JSAMPROW *row_pointers = malloc(sizeof(JSAMPROW) * res->y);
+		assert(row_pointers);
+
+		cinfo.err = jpeg_std_error(&jerr);
 		jpeg_create_compress(&cinfo);
 		jpeg_stdio_dest(&cinfo, fd2);
-		cinfo.image_width = xres; 	
-		cinfo.image_height = yres;
-		cinfo.input_components = 3;	
+		cinfo.image_width = res->x;
+		cinfo.image_height = res->y;
+		cinfo.input_components = 3;
 		cinfo.in_color_space = JCS_RGB;
 		cinfo.dct_method = JDCT_IFAST;
 		jpeg_set_defaults(&cinfo);
-		jpeg_set_quality(&cinfo,jpg_quality, TRUE);
+		jpeg_set_quality(&cinfo, opt->jpg_quality, TRUE);
 		jpeg_start_compress(&cinfo, TRUE);
-		row_stride = xres * 3;
-		while (cinfo.next_scanline < cinfo.image_height) 
-		{
-			row_pointer[0] = & output[cinfo.next_scanline * row_stride];
-			(void) jpeg_write_scanlines(&cinfo, row_pointer, 1);
+
+		unsigned char *mem = surface->mem;
+		unsigned int y;
+		for (y = 0; y < res->y; y++) {
+			row_pointers[y] = mem;
+			mem += surface->stride;
 		}
+
+		jpeg_write_scanlines(&cinfo, row_pointers, res->y);
 		jpeg_finish_compress(&cinfo);
 		jpeg_destroy_compress(&cinfo);
+		free(row_pointers);
 	}
-	
-	fclose(fd2);	
-	
-	// Thats all folks 
+
+	fclose(fd2);
+
+	// Thats all folks
 	printf("... Done !\n");
-	
+
 	// clean up
-	free(video);
-	free(osd);
-	free(output);
+	surface_free(&video);
+	surface_free(&osd);
 
 	return 0;
 }
 
 // grabing the video picture
 
-static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yres)
+static bool getvideo(struct grab_ctx *ctx, struct surface *surface)
 {
-	unsigned char *luma = NULL, *chroma = NULL;
-	unsigned int stride = 0, res = 0;
-	int mem_fd;
-
 	printf("Grabbing Video ...\n");
 
-	mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
-	if (mem_fd < 0) {
-		perror("/dev/mem");
-		return false;
-	}
-
-	if (stb_type == BRCM7401 || stb_type == BRCM7400 || stb_type == BRCM7405)
-	{
-		// grab brcm7401 pic from decoder memory
-		unsigned char *memory = mmap(0, 100, PROT_READ, MAP_SHARED, mem_fd, 0x10100000);
-		if (memory == MAP_FAILED) {
-			perror("mmap");
-			return false;
-		}
-
-		unsigned char data[100];
-
-		unsigned int adr,adr2,ofs,ofs2,offset/*,vert_start,vert_end*/;
-		unsigned int xsub,ytmp;
-		unsigned int xtmp;
-
-		memcpy(data,memory,100); 
-		//vert_start=data[0x1B]<<8|data[0x1A];
-		//vert_end=data[0x19]<<8|data[0x18];
-		stride=data[0x15]<<8|data[0x14];	
-		ofs=(data[0x28]<<8|data[0x27])>>4;
-		ofs2=(data[0x2c]<<8|data[0x2b])>>4;
-		adr=(data[0x1f]<<24|data[0x1e]<<16|data[0x1d]<<8|data[0x1c])&0xFFFFFF00;
-		adr2=(data[0x23]<<24|data[0x22]<<16|data[0x21]<<8|data[0x20])&0xFFFFFF00;
-		offset=adr2-adr;
-		
-		munmap(memory, 100);
-
-		// printf("Stride: %d Res: %d\n",stride,res);
-		// printf("Adr: %X Adr2: %X OFS: %d %d\n",adr,adr2,ofs,ofs2);
-
-		file_scanf_line("/proc/stb/vmpeg/0/yres", "%x", &res);
-
-		luma = malloc(stride * ofs);
-		assert(luma);
-		chroma = malloc(stride * (ofs2 + 64));
-		assert(chroma);
-
-		// grabbing luma & chroma plane from the decoder memory
-		if (stb_type == BRCM7401 || stb_type == BRCM7405) {
-			// on dm800/dm500hd we have direct access to the decoder memory
-			memory = mmap(0, offset + stride*(ofs2+64), PROT_READ, MAP_SHARED, mem_fd, adr);
-			if (memory == MAP_FAILED) {
-				perror("mmap");
-				return false;
-			}
-			
-			usleep(50000); 	// we try to get a full picture, its not possible to get a sync from the decoder so we use a delay
-					// and hope we get a good timing. dont ask me why, but every DM800 i tested so far produced a good
-					// result with a 50ms delay
-		} else if (stb_type == BRCM7400) { 
-			// on dm8000 we have to use dma, so dont change anything here until you really know what you are doing !
-			memory = mmap(0, DMA_BLOCKSIZE + 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, SPARE_RAM);
-			if (memory == MAP_FAILED) {
-				perror("mmap");
-				return false;
-			}
-
-			volatile unsigned long *mem_dma;
-			mem_dma = mmap(0, 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, 0x10c02000);
-			if (mem_dma == MAP_FAILED) {
-				perror("mmap");
-				return false;
-			}
-
-			unsigned int i = 0;
-			unsigned int tmp_len = DMA_BLOCKSIZE;
-			unsigned int tmp_size = offset + stride * (ofs2 + 64);
-			for (i=0; i < tmp_size; i += DMA_BLOCKSIZE)
-			{
-				unsigned long *descriptor = (void*)memory;
-
-				if (i + DMA_BLOCKSIZE > tmp_size)
-					tmp_len = tmp_size - i;
-				
-				descriptor[0] = /* READ */ adr + i;
-				descriptor[1] = /* WRITE */ SPARE_RAM + 0x1000;
-				descriptor[2] = 0x40000000 | /* LEN */ tmp_len;
-				descriptor[3] = 0;
-				descriptor[4] = 0;
-				descriptor[5] = 0;
-				descriptor[6] = 0;
-				descriptor[7] = 0;
-				mem_dma[1] = /* FIRST_DESCRIPTOR */ SPARE_RAM;
-				mem_dma[3] = /* DMA WAKE CTRL */ 3;
-				mem_dma[2] = 1;
-				while (mem_dma[5] == 1)
-					usleep(2);
-				mem_dma[2] = 0;
-			}
-
-			munmap((void *)mem_dma, 0x1000);
-			memory += 0x1000;
-		}
-
-		unsigned int t = 0, t2 = 0, dat1 = 0;
-		unsigned int chr_luma_stride = 0x40;
- 		unsigned int sw;
-
-		if (stb_type == BRCM7405)
-			chr_luma_stride *= 2;
-
-		xsub=chr_luma_stride;
-
-		// decode luma & chroma plane or lets say sort it
-		for (xtmp=0; xtmp < stride; xtmp+=chr_luma_stride)
-		{
-			if ((stride-xtmp) <= chr_luma_stride)
-				xsub=stride-xtmp;
-
-			dat1=xtmp;
-			sw=1;
-			for (ytmp = 0; ytmp < ofs; ytmp++) 
-			{
-				memcpy(luma + dat1, memory + t, xsub); // luma
-				t += chr_luma_stride;
-
-				switch (ofs2-ytmp) // the two switch commands are much faster than one if statement
-				{
-					case 0:
-						sw=0;
-						break;
-				}
-				switch (sw)
-				{
-					case 1:
-						memcpy(chroma + dat1, memory + offset + t2, xsub); // chroma
-						t2 += chr_luma_stride;
-						break;
-				}
-				dat1+=stride;
-			}
-		}
-
-		if (stb_type == BRCM7401 || stb_type == BRCM7405)
-			munmap(memory, offset + stride * (ofs2 + 64));
-		else if (stb_type == BRCM7400) {
-			memory -= 0x1000;
-			munmap(memory, DMA_BLOCKSIZE + 0x1000);
-		}
-
-		for (t=0; t< stride*ofs;t+=4)
-		{
-			SWAP(luma[t],luma[t+3]);
-			SWAP(luma[t+1],luma[t+2]);
-
-			if (t< stride*(ofs>>1))
-			{ 
-				SWAP(chroma[t],chroma[t+3]);
-				SWAP(chroma[t+1],chroma[t+2]);			
-			}
-		
-		}
-	} else if (stb_type == XILLEON) {
-		// grab xilleon pic from decoder memory
-		unsigned char *memory = mmap(0, 1920*1152*6, PROT_READ, MAP_SHARED, mem_fd, 0x6000000);
-		if (memory == MAP_FAILED) {
-			perror("mmap");
-			return false;
-		}
-
-		luma = malloc(1920 * 1152);
-		assert(luma);
-		chroma = malloc(1920 * 576);
-		assert(chroma);
-
-		unsigned int offset = 1920 * 1152 * 5;	// offset for chroma buffer
-
-		file_scanf_line("/proc/stb/vmpeg/0/xres", "%x", &stride);
-		file_scanf_line("/proc/stb/vmpeg/0/yres", "%x", &res);
-
-		unsigned char *frame_l = malloc(1920 * 1080); // luma frame from video decoder
-		assert(frame_l);
-		unsigned char *frame_c = malloc(1920 * 540); // chroma frame from video decoder
-		assert(frame_c);
-
-		// grab luma buffer from decoder memory	
-		memcpy(frame_l,memory,1920*1080); 
-		// grab chroma buffer from decoder memory
-		memcpy(frame_c,memory+offset,1920*540);
-
-		munmap(memory, 1920*1152*6);
-
-		unsigned int xtmp, ytmp, xsub, ysub;
-		const unsigned int ypart = 32;
-		const unsigned int xpart = 128;
-		unsigned int t = 0, t2 = 0, odd_even = 0;
-		int oe2 = 0;
-
-		// "decode" luma/chroma, there are 128x32pixel blocks inside the decoder mem
-		for (ysub=0; ysub<(res/32)+1; ysub++) 
-		{
-			for (xsub=0; xsub<15; xsub++) // 1920/128=15
-			{
-				for (ytmp=0; ytmp<ypart; ytmp++)
-				{
-					for (xtmp=0; xtmp< xpart; xtmp++)
-					{
-						if (odd_even == 0)
-							oe2=0;
-						if (odd_even == 1 && xtmp < 64)
-							oe2=64;
-						if (odd_even == 1 && xtmp >= 64)
-							oe2=-64;
-						if (xsub*xpart+xtmp+oe2 < stride) 
-							memcpy(luma+((xsub*xpart+oe2))+xtmp+(stride*(ytmp+(ysub*ypart))),frame_l+t,1); // luma
-						if (ysub < (res/64)+1)
-						{
-							if (xsub*xpart+xtmp+oe2 < stride) 
-								memcpy(chroma+((xsub*xpart+oe2))+xtmp+(stride*(ytmp+(ysub*ypart))),frame_c+t,1); // chroma
-							t2++;
-						}
-						t++;
-					}
-				}
-			}
-			odd_even^=1;
-		}
-		free(frame_l);
-		free(frame_c);
-	} else if (stb_type == VULCAN || stb_type == PALLAS)
-	{
-		// grab via v4l device (ppc boxes)
-		
-		unsigned char *memory = malloc(720 * 576 * 3 + 16);
-		assert(memory);
-
-		int fd_video = open(VIDEO_DEV, O_RDONLY);
-		if (fd_video < 0) {
-			perror(VIDEO_DEV);
-			return false;
-		}
-
-		ssize_t r = read(fd_video, memory, 720 * 576 * 3 + 16);
-		if (r < 16) {
-			perror("read");
-			close(fd_video);
-			return false;
-		}
-		close(fd_video);
-
-		int *size = (int*)memory;
-		stride = size[0];
-		res = size[1];
-
-		luma = malloc(stride * res);
-		assert(luma);
-		chroma = malloc(stride * res);
-		assert(chroma);
-
-		memcpy(luma, memory + 16, stride * res);
-		memcpy(chroma, memory + 16 + stride * res, stride * res);
-
-		free(memory);
-	}
-
-	close(mem_fd);	
-	
-	int Y, U, V, y ,x, out1, pos, RU, GU, GV, BV, rgbstride, t;
-	Y=U=V=0;
-		
-	// yuv2rgb conversion (4:2:0)
-	printf("... converting Video from YUV to RGB color space\n");
-	out1=pos=t=0;
-	rgbstride=stride*3;
-	
-	for (y=res; y != 0; y-=2)
-	{
-		for (x=stride; x != 0; x-=2)
-		{
-			U=chroma[t++];
-			V=chroma[t++];
-			
-			RU=yuv2rgbtable_ru[U]; // use lookup tables to speedup the whole thing
-			GU=yuv2rgbtable_gu[U];
-			GV=yuv2rgbtable_gv[V];
-			BV=yuv2rgbtable_bv[V];
-			
-			switch (stb_type) //on xilleon we use bgr instead of rgb so simply swap the coeffs
-			{
-				case XILLEON:
-					SWAP(RU,BV);
-					break;
-			}
-
-			// now we do 4 pixels on each iteration this is more code but much faster 
-			Y=yuv2rgbtable_y[luma[pos]]; 
-
-			video[out1]=CLAMP((Y + RU)>>16);
-			video[out1+1]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2]=CLAMP((Y + BV)>>16);
-			
-			Y=yuv2rgbtable_y[luma[stride+pos]];
-
-			video[out1+rgbstride]=CLAMP((Y + RU)>>16);
-			video[out1+1+rgbstride]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2+rgbstride]=CLAMP((Y + BV)>>16);
-
-			pos++;
-			out1+=3;
-			
-			Y=yuv2rgbtable_y[luma[pos]];
-
-			video[out1]=CLAMP((Y + RU)>>16);
-			video[out1+1]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2]=CLAMP((Y + BV)>>16);
-			
-			Y=yuv2rgbtable_y[luma[stride+pos]];
-
-			video[out1+rgbstride]=CLAMP((Y + RU)>>16);
-			video[out1+1+rgbstride]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2+rgbstride]=CLAMP((Y + BV)>>16);
-			
-			out1+=3;
-			pos++;
-		}
-		out1+=rgbstride;
-		pos+=stride;
-
-	}
-
-	*xres=stride;
-	*yres=res;
-	printf("... Video-Size: %d x %d\n",*xres,*yres);
-	if (luma)
-		free(luma);
-	if (chroma)
-		free(chroma);
-
-	return true;
+	if (soc_type == SOC_IBM_PALLAS || soc_type == SOC_IBM_VULCAN)
+		return devvideo_get_video(ctx, surface);
+	else
+		return devmem_get_video(ctx, surface);
 }
 
 // grabing the osd picture
 
-static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres)
+static bool devmem_read8(int fd, struct surface *surface,
+			 const unsigned char *fbmem,
+			 const struct fb_fix_screeninfo *fix,
+			 const struct fb_var_screeninfo *var)
 {
-	int fb,pos,pos1,pos2,ofs;
-	unsigned int x, y;
-	unsigned char *lfb;
-	struct fb_fix_screeninfo fix_screeninfo;
-	struct fb_var_screeninfo var_screeninfo;
+	// Read Color Palette directly from the main memory, because the FBIOGETCMAP is buggy on dream and didnt
+	// gives you the correct colortable !
+	unsigned short r[256], g[256], b[256], a[256];
+	unsigned short color;
+	unsigned char *memory;
+	unsigned int size = 0x1000;
 
-	fb = open("/dev/fb0", O_RDWR);
-	if (fb == -1) {
-		fb = open("/dev/fb/0", O_RDWR);
-		if (fb == -1) {
+	memory = mmap(0, size, PROT_READ, MAP_SHARED, fd, fix->smem_start - 0x1000);
+	if (memory == MAP_FAILED) {
+		perror("mmap");
+		return false;
+	}
+
+	if (soc_type == SOC_IBM_VULCAN) {// DM500/5620 stores the colors as a 16bit word with yuv values, so we have to convert :(
+		unsigned short yuv;
+		unsigned int pos1, pos2 = 0;
+		for (pos1 = 16; pos1 < (256 * 2) + 16; pos1 += 2) {
+			yuv = (memory[pos1] << 8) | memory[pos1 + 1];
+
+			r[pos2] = CLAMP((76310 * (YFB(yuv) - 16) + 104635 * (CRFB(yuv) - 128)) >> 16);
+			g[pos2] = CLAMP((76310 * (YFB(yuv) - 16) - 53294 * (CRFB(yuv) - 128) - 25690 * (CBFB(yuv) - 128)) >> 16);
+			b[pos2] = CLAMP((76310 * (YFB(yuv) - 16) + 132278 * (CBFB(yuv) - 128)) >> 16);
+
+			if (yuv == 0) {// transparency is a bit tricky, there is a 2 bit blending value BFFB(yuv), but not really used
+				r[pos2] = g[pos2] = b[pos2] = 0;
+				a[pos2] = 0x00;
+			} else {
+				a[pos2] = 0xFF;
+			}
+
+			pos2++;
+		}
+	} else /* if (soc_type == SOC_IBM_PALLAS) */ { // DM70x0 stores the colors in plain rgb values
+		unsigned int pos1, pos2 = 0;
+		for (pos1 = 32; pos1 < (256 * 4) + 32; pos1 += 4) {
+			r[pos2] = memory[pos1 + 1];
+			g[pos2] = memory[pos1 + 2];
+			b[pos2] = memory[pos1 + 3];
+			a[pos2] = memory[pos1];
+			pos2++;
+		}
+	}
+
+	munmap(memory, size);
+
+	// get 8bit framebuffer
+	unsigned int pos = 0;
+	unsigned int ofs = fix->line_length - var->xres;
+	unsigned char *mem = surface->mem;
+	unsigned int x, y;
+
+	for (y = 0; y < var->yres; y++) {
+		for (x = 0; x < var->xres; x++) {
+			color = fbmem[pos++];
+
+			mem[0] = b[color];
+			mem[1] = g[color];
+			mem[2] = r[color];
+			mem[3] = a[color];
+			mem += 4;
+		}
+
+		pos += ofs;
+	}
+
+	return true;
+}
+
+static bool fb_read8(struct surface *surface,
+		     const unsigned char *fbmem,
+		     const struct fb_fix_screeninfo *fix,
+		     const struct fb_var_screeninfo *var)
+{
+	bool ret = false;
+
+	if (soc_type == SOC_IBM_VULCAN || soc_type == SOC_IBM_PALLAS) {
+		int fd = open("/dev/mem", O_RDONLY);
+		if (fd < 0) {
+			perror("/dev/mem");
+			return ret;
+		}
+
+		ret = devmem_read8(fd, surface, fbmem, fix, var);
+		close(fd);
+	}
+
+	return ret;
+}
+
+static bool fb_read16(struct surface *surface,
+		      const unsigned char *fbmem,
+		      const struct fb_fix_screeninfo *fix,
+		      const struct fb_var_screeninfo *var)
+{
+	// get 16bit framebuffer
+	unsigned short color;
+	unsigned int pos = 0;
+	unsigned int ofs = fix->line_length - (var->xres * 2);
+	unsigned char *mem = surface->mem;
+	unsigned int x, y;
+
+	for (y = 0; y < var->yres; y++) {
+		for (x = 0; x < var->xres; x++) {
+			color = (fbmem[pos] << 8) | fbmem[pos + 1];
+			pos += 2;
+
+			mem[0] = BLUE565(color); // b
+			mem[1] = GREEN565(color); // g
+			mem[2] = RED565(color); // r
+			mem[3] = 0x00; // tr - there is no transparency in 16bit mode
+			mem += 4;
+		}
+
+		pos += ofs;
+	}
+
+	return true;
+}
+
+static bool fb_read32(struct surface *surface,
+		      const void *fbmem,
+		      const struct fb_fix_screeninfo *fix,
+		      const struct fb_var_screeninfo *var)
+{
+	// get 32bit framebuffer
+	unsigned int size = fix->line_length * var->yres;
+	if (fix->line_length == surface->stride) { // we have no offset ? so do it the easy and fast way
+		memcpy(surface->mem, fbmem, size);
+	} else { // DM7025 have an offset, so we have to do it line for line
+		unsigned char *src, *dst; // use additional buffer to speed up especially when using hd skins
+		unsigned int y;
+		src = malloc(size);
+		if (src == NULL) {
+			perror("malloc");
+			return false;
+		}
+		memcpy(src, fbmem, size);
+		dst = surface->mem;
+		for (y = 0; y < var->yres; y++) {
+			memcpy(dst, &src[fix->line_length * y], surface->stride);
+			dst += surface->stride;
+		}
+		free(src);
+	}
+
+	return true;
+}
+
+static bool fb_read(struct surface *surface, int fd,
+		    const struct fb_fix_screeninfo *fix,
+		    const struct fb_var_screeninfo *var)
+{
+	bool ret = false;
+	void *fbmem;
+
+	printf("fbdev: %dx%d@%dbpp\n", var->xres, var->yres, var->bits_per_pixel);
+
+	fbmem = mmap(0, fix->smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (fbmem == MAP_FAILED) {
+		perror("mmap");
+		return ret;
+	}
+
+	surface_set_size(surface, var->xres, var->yres);
+	surface_alloc(surface);
+
+	if (var->bits_per_pixel == 32)
+		ret = fb_read32(surface, fbmem, fix, var);
+	else if (var->bits_per_pixel == 16)
+		ret = fb_read16(surface, fbmem, fix, var);
+	else if (var->bits_per_pixel == 8)
+		ret = fb_read8(surface, fbmem, fix, var);
+
+	munmap(fbmem, fix->smem_len);
+	return ret;
+}
+
+static bool getosd(struct surface *surface)
+{
+	struct fb_fix_screeninfo fix;
+	struct fb_var_screeninfo var;
+	bool ret = false;
+	int fd;
+
+	fd = open("/dev/fb0", O_RDWR);
+	if (fd == -1) {
+		fd = open("/dev/fb/0", O_RDWR);
+		if (fd == -1) {
 			perror("fbdev");
 			return false;
 		}
 	}
 
-	if (ioctl(fb, FBIOGET_FSCREENINFO, &fix_screeninfo) == -1) {
+	if (ioctl(fd, FBIOGET_FSCREENINFO, &fix) == -1) {
 		perror("FBIOGET_FSCREENINFO");
 		return false;
 	}
 
-	if (ioctl(fb, FBIOGET_VSCREENINFO, &var_screeninfo) == -1) {
+	if (ioctl(fd, FBIOGET_VSCREENINFO, &var) == -1) {
 		perror("FBIOGET_VSCREENINFO");
 		return false;
 	}
-	
-	lfb = mmap(0, fix_screeninfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fb, 0);
-	if (lfb == MAP_FAILED) {
-		perror("mmap");
-		return false;
-	}
 
-	if ( var_screeninfo.bits_per_pixel == 32 ) 
-	{
-		printf("Grabbing 32bit Framebuffer ...\n");
-	
-		// get 32bit framebuffer
-		pos=pos1=pos2=0;
-		ofs=fix_screeninfo.line_length-(var_screeninfo.xres*4);
-		
-		if (ofs == 0) // we have no offset ? so do it the easy and fast way
-		{
-			memcpy(osd,lfb,fix_screeninfo.line_length*var_screeninfo.yres);
-		}
-		else // DM7025 have an offset, so we have to do it line for line
-		{
-			unsigned char *memory; // use additional buffer to speed up especially when using hd skins
-			memory = malloc(fix_screeninfo.line_length*var_screeninfo.yres);
-			assert(memory);
-			memcpy(memory,lfb,fix_screeninfo.line_length*var_screeninfo.yres);
-			for (y=0; y < var_screeninfo.yres; y+=1)
-				memcpy(osd+y*var_screeninfo.xres*4,memory+y*fix_screeninfo.line_length,var_screeninfo.xres*4);
-			free(memory);
-		}
-	} else if ( var_screeninfo.bits_per_pixel == 16 )
-	{
-		printf("Grabbing 16bit Framebuffer ...\n");
-		unsigned short color;
-		
-		// get 16bit framebuffer
-		pos=pos1=pos2=0;
-		ofs=fix_screeninfo.line_length-(var_screeninfo.xres*2);		
-		for (y=0; y < var_screeninfo.yres; y+=1)
-		{
-			for (x=0; x < var_screeninfo.xres; x+=1)
-			{
-				color = lfb[pos2] << 8 | lfb[pos2+1];
-				pos2+=2;
-				
-				osd[pos1++] = BLUE565(color); // b
-				osd[pos1++] = GREEN565(color); // g
-				osd[pos1++] = RED565(color); // r
-				osd[pos1++]=0x00; // tr - there is no transparency in 16bit mode
-			}
-			pos2+=ofs;
-		} 
-	} else if ( var_screeninfo.bits_per_pixel == 8 )
-	{
-		printf("Grabbing 8bit Framebuffer ...\n");
-		unsigned short color;
-	
-		// Read Color Palette directly from the main memory, because the FBIOGETCMAP is buggy on dream and didnt
-		// gives you the correct colortable !
-		int mem_fd;
-		unsigned char *memory;
-		unsigned short rd[256], gn[256], bl[256], tr[256];
-		
-		mem_fd = open("/dev/mem", O_RDWR);
-		if (mem_fd < 0) {
-			perror("/dev/mem");
-			return false;
-		}
+	ret = fb_read(surface, fd, &fix, &var);
 
-		memory = mmap(0, fix_screeninfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, fix_screeninfo.smem_start - 0x1000);
-		if (memory == MAP_FAILED) {
-			perror("mmap");
-			return false;
-		}
+	close(fd);
 
-		if (stb_type == VULCAN) // DM500/5620 stores the colors as a 16bit word with yuv values, so we have to convert :(
-		{
-			unsigned short yuv;
-			pos2 = 0;
-			for (pos1=16; pos1<(256*2)+16; pos1+=2)
-			{
-				
-				yuv = memory[pos1] << 8 | memory[pos1+1];
-			
-				rd[pos2]=CLAMP((76310*(YFB(yuv)-16) + 104635*(CRFB(yuv)-128))>>16);
-				gn[pos2]=CLAMP((76310*(YFB(yuv)-16) - 53294*(CRFB(yuv)-128) - 25690*(CBFB(yuv)-128))>>16);
-				bl[pos2]=CLAMP((76310*(YFB(yuv)-16) + 132278*(CBFB(yuv)-128))>>16);
-			
-				if (yuv == 0) // transparency is a bit tricky, there is a 2 bit blending value BFFB(yuv), but not really used
-				{
-					rd[pos2]=gn[pos2]=bl[pos2]=0;
-					tr[pos2]=0x00;
-				} else
-					tr[pos2]=0xFF;
-				
-				pos2++;
-			}
-		} else if (stb_type == PALLAS) // DM70x0 stores the colors in plain rgb values
-		{
-			pos2 = 0;
-			for (pos1=32; pos1<(256*4)+32; pos1+=4)
-			{
-				rd[pos2]=memory[pos1+1];
-				gn[pos2]=memory[pos1+2];
-				bl[pos2]=memory[pos1+3];
-				tr[pos2]=memory[pos1];
-				pos2++;
-			}
-		} else
-		{
-			printf("unsupported framebuffermode\n");
-			return false;
-		}
-		close(mem_fd);
-		
-		// get 8bit framebuffer
-		pos=pos1=pos2=0;
-		ofs=fix_screeninfo.line_length-(var_screeninfo.xres);		
-		for (y=0; y < var_screeninfo.yres; y+=1)
-		{
-			for (x=0; x < var_screeninfo.xres; x+=1)
-			{
-				color = lfb[pos2++];
-				
-				osd[pos1++] = bl[color]; // b
-				osd[pos1++] = gn[color]; // g
-				osd[pos1++] = rd[color]; // r
-				osd[pos1++] = tr[color]; // tr
-			}
-			pos2+=ofs;
-		} 
-	}
-	close(fb);
-
-	*xres=var_screeninfo.xres;
-	*yres=var_screeninfo.yres;
-	printf("... Framebuffer-Size: %d x %d\n",*xres,*yres);
-	return true;
+	return ret;
 }
 
 // bicubic pixmap resizing
@@ -1143,44 +1648,168 @@ static void fast_resize(const unsigned char *source, unsigned char *dest,
 {
 	unsigned int x_ratio = (xsource << 16) / xdest;
 	unsigned int y_ratio = (ysource << 16) / ydest;
-
 	unsigned int x2, i ,j, y2_xsource, i_xdest, y2_x2_colors, i_x_colors;
 	unsigned int c;
-    for (i=0;i<ydest;i++) 
-	{
+
+	for (i=0;i<ydest;i++) {
 		y2_xsource = ((i*y_ratio)>>16)*xsource; // do some precalculations
 		i_xdest = i*xdest;
-        for (j=0;j<xdest;j++) 
-		{
-            x2 = ((j*x_ratio)>>16) ;
+		for (j=0;j<xdest;j++) {
+			x2 = ((j*x_ratio)>>16);
 			y2_x2_colors = (y2_xsource+x2)*colors;
 			i_x_colors = (i_xdest+j)*colors;
-            for (c=0; c<colors; c++)
+			for (c=0; c<colors; c++)
 				dest[i_x_colors + c] = source[y2_x2_colors + c] ;
-        }                
-    }          
+		}
+	}
+}
+
+static inline unsigned int combine_channel(unsigned int front,
+					   unsigned int back,
+					   unsigned int alpha,
+					   unsigned int inv_alpha)
+{
+	return ((front * alpha) + (back * inv_alpha)) >> 8;
+}
+
+static inline void combine_pixels_888(unsigned char *dest,
+ 			              const unsigned char *front,
+				      const unsigned char *back,
+				      unsigned int alpha)
+{
+	if (alpha == 0) {
+		if (dest != back) {
+			dest[0] = back[0];
+			dest[1] = back[1];
+			dest[2] = back[2];
+		}
+	} else if (alpha == 0xff) {
+		if (dest != front) {
+			dest[0] = front[0];
+			dest[1] = front[1];
+			dest[2] = front[2];
+		}
+	} else {
+		unsigned int inv_alpha = 0xff - alpha;
+		dest[0] = combine_channel(front[0], back[0], alpha, inv_alpha);
+		dest[1] = combine_channel(front[1], back[1], alpha, inv_alpha);
+		dest[2] = combine_channel(front[2], back[2], alpha, inv_alpha);
+	}
+}
+
+static inline void combine_pixels_8888(unsigned char *dest,
+				       const unsigned char *front,
+				       const unsigned char *back)
+{
+	unsigned int alpha = front[3];
+
+	if (alpha == 0) {
+		if (dest != back)
+			*(unsigned int *)dest = *(const unsigned int *)back;
+	} else if (alpha == 0xff) {
+		if (dest != front)
+			*(unsigned int *)dest = *(const unsigned int *)front;
+	} else {
+		unsigned int inv_alpha = 0xff - alpha;
+		dest[0] = combine_channel(front[0], back[0], alpha, inv_alpha);
+		dest[1] = combine_channel(front[1], back[1], alpha, inv_alpha);
+		dest[2] = combine_channel(front[2], back[2], alpha, inv_alpha);
+		dest[3] = 0xff;
+	}
 }
 
 // combining pixmaps by using an alphamap
 
-static void combine(unsigned char *output,
-		    const unsigned char *video, const unsigned char *osd,
-		    unsigned int xres, unsigned int yres)
+static void combine(struct surface *dest,		/* RGBA or BGRA or RGB24 or BGR24 */
+		    const struct surface *front,	/* RGBA or BGRA */
+		    const struct surface *back)		/* RGBA or BGRA or RGB24 or BGR24 */
 {
-	unsigned int a,apos,a2,pos1,vpos1;
-	
-	apos=pos1=vpos1=0;
-	for (a=xres*yres; a != 0; a--)
-	{	
-		apos=pos1+3;
-		a2=0xFF-osd[apos];
-		output[vpos1] =  ( ( video[vpos1] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-		vpos1++;
-		output[vpos1] =  ( ( video[vpos1] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-		vpos1++;
-		output[vpos1] =  ( ( video[vpos1] * a2 ) + ( osd[pos1++] * osd[apos] ) ) >>8;
-		vpos1++;
-		pos1++; // skip alpha byte
+	unsigned char *pdest = dest->mem;
+	const unsigned char *pfront = front->mem;
+	const unsigned char *pback = back->mem;
+	unsigned int i;
+
+	printf("Merge %s with %s\n", front->name, back->name);
+
+	assert(surface_width(dest) == surface_width(front));
+	assert(surface_height(dest) == surface_height(front));
+	assert(surface_width(dest) == surface_width(back));
+	assert(surface_height(dest) == surface_height(back));
+
+	for (i = 0; i < dest->npixels; i++) {
+		combine_pixels_888(pdest, pfront, pback, pfront[3]);
+		if (surface_pixel_width(dest) == 4)
+			pdest[3] = 0xff;
+
+		pfront += surface_pixel_width(front);
+		pdest += surface_pixel_width(dest);
+		pback += surface_pixel_width(back);
 	}
+}
+
+static void combine_rect(struct surface *dest,		/* RGBA or BGRA */
+			 const struct surface *front,	/* RGBA or BGRA */
+			 const struct surface *back,	/* RGBA or BGRA */
+			 const struct rect *rect)
+{
+	const unsigned int top_size = rect->top * dest->stride;
+	const unsigned int left_size = rect->left * surface_pixel_width(dest);
+	const unsigned int right_size = dest->stride - ((rect->left + rect->width) * surface_pixel_width(dest));
+	const unsigned int bottom_size = dest->size - (rect->top + rect->height) * dest->stride;
+	unsigned char *pdest = dest->mem;
+	const unsigned char *pfront = front->mem;
+	const unsigned char *pback = back->mem;
+	unsigned int x, y;
+
+	printf("Merge %s with %s (top=%d left=%d width=%d height=%d)\n",
+		front->name, back->name,
+		rect->top, rect->left, rect->width, rect->height);
+
+	assert(surface_width(dest) == surface_width(front));
+	assert(surface_height(dest) == surface_height(front));
+
+	assert(surface_width(back) <= surface_width(dest));
+	assert(surface_height(back) <= surface_height(dest));
+
+	assert(rect->left + rect->width <= surface_width(dest));
+	assert(rect->top + rect->height <= surface_height(dest));
+
+	assert(surface_pixel_width(front) == 4);
+	assert(surface_pixel_width(dest) == 4);
+	assert(surface_pixel_width(back) == 4);
+
+	assert(dest->mem == front->mem);
+
+	if (dest->mem != front->mem)
+		memcpy(pdest, pfront, top_size);
+	pfront += top_size;
+	pdest += top_size;
+
+	for (y = 0; y < rect->height; y++) {
+		if (dest->mem != front->mem)
+			memcpy(pdest, pfront, left_size);
+		pfront += left_size;
+		pdest += left_size;
+
+		for (x = 0; x < rect->width; x++) {
+			combine_pixels_8888(pdest, pfront, pback);
+			pfront += surface_pixel_width(front);
+			pdest += surface_pixel_width(dest);
+			pback += surface_pixel_width(back);
+		}
+
+		if (dest->mem != front->mem)
+			memcpy(pdest, pfront, right_size);
+
+		pfront += right_size;
+		pdest += right_size;
+	}
+
+	if (dest->mem != front->mem)
+		memcpy(pdest, pfront, bottom_size);
+#if 0
+	pfront += bottom_size;
+	pdest += bottom_size;
+#endif
 }
 
