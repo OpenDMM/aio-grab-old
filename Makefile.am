@@ -1,4 +1,6 @@
-AM_CFLAGS = -Wall -Wextra -Werror
+AM_CFLAGS = \
+	@LIBPNG_CFLAGS@ \
+	-Wall -Wextra -std=c99 -ggdb3
 
 bin_PROGRAMS = grab
 
