@@ -594,6 +594,13 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 		// printf("Stride: %d Res: %d\n",stride,res);
 		// printf("Adr: %X Adr2: %X OFS: %d %d\n",adr,adr2,ofs,ofs2);
 
+		// Check that obtained values are sane and prevent segfaults.
+		if ((adr == 0) || (adr2 == 0) || (adr2 <= adr))
+		{
+			printf("Got or invalid 'adr' offsets, aborting (%x,%x)\n", adr, adr2);
+			return false;
+		}
+
 		file_scanf_line("/proc/stb/vmpeg/0/yres", "%x", &res);
 
 		luma = malloc(stride * ofs);
@@ -615,6 +622,16 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 					// result with a 50ms delay
 		} else if (stb_type == BRCM7400) { 
 			// on dm8000 we have to use dma, so dont change anything here until you really know what you are doing !
+			
+			unsigned int i = 0;
+			unsigned int tmp_len = DMA_BLOCKSIZE;
+			unsigned int tmp_size = offset + stride * (ofs2 + 64);
+			if (tmp_size > 2 * DMA_BLOCKSIZE)
+			{
+				printf("DMA length exceeds maximum (0x%x)\n", tmp_size);
+				return false;
+			}
+
 			memory = mmap(0, DMA_BLOCKSIZE + 0x1000, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, SPARE_RAM);
 			if (memory == MAP_FAILED) {
 				perror("mmap");
@@ -628,9 +645,6 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 				return false;
 			}
 
-			unsigned int i = 0;
-			unsigned int tmp_len = DMA_BLOCKSIZE;
-			unsigned int tmp_size = offset + stride * (ofs2 + 64);
 			for (i=0; i < tmp_size; i += DMA_BLOCKSIZE)
 			{
 				unsigned long *descriptor = (void*)memory;
