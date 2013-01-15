@@ -217,7 +217,9 @@ int main(int argc, char **argv) {
 			stb_type = BRCM7400;
 		else if (!strcmp(line, "dm800"))
 			stb_type = BRCM7401;
-		else if (!strcmp(line, "dm500hd") ||
+		else if (!strcmp(line, "dm500hdv2") ||
+			 !strcmp(line, "dm500hd") ||
+			 !strcmp(line, "dm800sev2") ||
 			 !strcmp(line, "dm800se") ||
 			 !strcmp(line, "dm7020hd"))
 			stb_type = BRCM7405;
