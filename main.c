@@ -657,7 +657,7 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 				descriptor[0] = /* READ */ adr + i;
 				descriptor[1] = /* WRITE */ SPARE_RAM + 0x1000;
 				descriptor[2] = 0x40000000 | /* LEN */ tmp_len;
-				descriptor[3] = 0;
+				descriptor[3] = 2;
 				descriptor[4] = 0;
 				descriptor[5] = 0;
 				descriptor[6] = 0;
@@ -720,17 +720,16 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 			munmap(memory, DMA_BLOCKSIZE + 0x1000);
 		}
 
-		for (t=0; t< stride*ofs;t+=4)
-		{
-			SWAP(luma[t],luma[t+3]);
-			SWAP(luma[t+1],luma[t+2]);
+		if (stb_type != BRCM7400) {
+			for (t = 0; t < stride * ofs; t += 4) {
+				SWAP(luma[t    ], luma[t + 3]);
+				SWAP(luma[t + 1], luma[t + 2]);
 
-			if (t< stride*(ofs>>1))
-			{ 
-				SWAP(chroma[t],chroma[t+3]);
-				SWAP(chroma[t+1],chroma[t+2]);			
+				if (t < stride * (ofs >> 1)) {
+					SWAP(chroma[t    ], chroma[t + 3]);
+					SWAP(chroma[t + 1], chroma[t + 2]);
+				}
 			}
-		
 		}
 	} else if (stb_type == XILLEON) {
 		// grab xilleon pic from decoder memory
