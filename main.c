@@ -101,9 +101,11 @@ static void combine(unsigned char *output,
 		    const unsigned char *video, const unsigned char *osd,
 		    unsigned int xres, unsigned int yres);
 
-enum {UNKNOWN,PALLAS,VULCAN,XILLEON,BRCM7401,BRCM7400,BRCM7405};
-static const char *stb_name[]={"unknown","Pallas","Vulcan","Xilleon","Brcm7401","Brcm7400","Brcm7405"};
+enum {UNKNOWN,PALLAS,VULCAN,XILLEON,BRCM7401,BRCM7400,BRCM7405,BRCM7435};
+enum {BGR,RGB};
+static const char *stb_name[]={"unknown","Pallas","Vulcan","Xilleon","Brcm7401","Brcm7400","Brcm7405","Brcm7435"};
 static int stb_type=UNKNOWN;
+static int byte_order=BGR;
 
 static const char *file_getline(const char *filename)
 {
@@ -223,6 +225,8 @@ int main(int argc, char **argv) {
 			 !strcmp(line, "dm800se") ||
 			 !strcmp(line, "dm7020hd"))
 			stb_type = BRCM7405;
+		else if (!strcmp(line, "dm7080"))
+			stb_type = BRCM7435;
 	} else if (strstr(line, "xilleonfb")) {
 		stb_type = XILLEON;
 	} else if (strstr(line, "Pallas FB")) {
@@ -450,6 +454,17 @@ int main(int argc, char **argv) {
 		fwrite(hdr, 1, i, fd2);
 		
 		int y;
+		if (byte_order == RGB) {
+			unsigned int x, x2, xres1, xres2;
+			for (y=0; (unsigned int)y<yres; y++) {
+				xres1=y*xres*output_bytes;
+				xres2=xres1+2;
+				for (x=0; x<xres; x++) {
+					x2=x*output_bytes;
+					SWAP(output[x2+xres1],output[x2+xres2]);
+				}
+			}
+		}
 		for (y=yres-1; y>=0 ; y-=1) {
 			fwrite(output+(y*xres*output_bytes),xres*output_bytes,1,fd2);
 		}
@@ -471,7 +486,8 @@ int main(int argc, char **argv) {
 		for (y=0; y<yres; y++)
 			row_pointers[y]=output+(y*xres*output_bytes);
 		
-		png_set_bgr(png_ptr);
+		if (byte_order == BGR)
+			png_set_bgr(png_ptr);
 		png_set_IHDR(png_ptr, info_ptr, xres, yres, 8, ((output_bytes<4)?PNG_COLOR_TYPE_RGB:PNG_COLOR_TYPE_RGBA) , PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
 		png_write_info(png_ptr, info_ptr);
 		png_write_image(png_ptr, row_pointers);
@@ -482,8 +498,9 @@ int main(int argc, char **argv) {
 	} else 
 	{
 		// write jpg
+#if !defined(JCS_EXTENSIONS)
 		unsigned int x,y,xres1,xres2,x2;
-		if (output_bytes == 3) // swap bgr<->rgb
+		if (output_bytes == 3 && byte_order == BGR) // swap bgr<->rgb
 		{
 			for (y=0; y<yres; y++)
 			{
@@ -496,7 +513,7 @@ int main(int argc, char **argv) {
 				}
 			}
 		}
-		else // swap bgr<->rgb and eliminate alpha channel jpgs are always saved with 24bit without alpha channel
+		else if (output_bytes == 4) // swap bgr<->rgb and eliminate alpha channel jpgs are always saved with 24bit without alpha channel
 		{
 			for (y=0; y<yres; y++)
 			{
@@ -506,10 +523,13 @@ int main(int argc, char **argv) {
 				{
 					x2=x*3;
 					memcpy(output+x2+xres1,output+x*4+y*xres*4,3);
-					SWAP(output[x2+xres1],output[x2+xres2]);
+					if (byte_order == BGR)
+						SWAP(output[x2+xres1],output[x2+xres2]);
 				}
 			}
+			output_bytes = 3;
 		}
+#endif
 
 		struct jpeg_compress_struct cinfo;
 		struct jpeg_error_mgr jerr;
@@ -521,13 +541,20 @@ int main(int argc, char **argv) {
 		jpeg_stdio_dest(&cinfo, fd2);
 		cinfo.image_width = xres; 	
 		cinfo.image_height = yres;
-		cinfo.input_components = 3;	
+		cinfo.input_components = output_bytes;
+#if defined(JCS_EXTENSIONS)
+		if (output_bytes == 3)
+			cinfo.in_color_space = (byte_order == BGR) ? JCS_EXT_BGR : JCS_EXT_RGB;
+		else
+			cinfo.in_color_space = (byte_order == BGR) ? JCS_EXT_BGRA : JCS_EXT_RGBA;
+#else
 		cinfo.in_color_space = JCS_RGB;
+#endif
 		cinfo.dct_method = JDCT_IFAST;
 		jpeg_set_defaults(&cinfo);
 		jpeg_set_quality(&cinfo,jpg_quality, TRUE);
 		jpeg_start_compress(&cinfo, TRUE);
-		row_stride = xres * 3;
+		row_stride = xres * output_bytes;
 		while (cinfo.next_scanline < cinfo.image_height) 
 		{
 			row_pointer[0] = & output[cinfo.next_scanline * row_stride];
@@ -566,10 +593,16 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 		return false;
 	}
 
-	if (stb_type == BRCM7401 || stb_type == BRCM7400 || stb_type == BRCM7405)
+	if (stb_type == BRCM7401 || stb_type == BRCM7400 || stb_type == BRCM7405 || stb_type == BRCM7435)
 	{
 		// grab brcm7401 pic from decoder memory
-		unsigned char *memory = mmap(0, 100, PROT_READ, MAP_SHARED, mem_fd, 0x10100000);
+		unsigned long base;
+		if (stb_type == BRCM7435)
+			base = 0x10600000;
+		else
+			base = 0x10100000;
+
+		unsigned char *memory = mmap(0, 100, PROT_READ, MAP_SHARED, mem_fd, base);
 		if (memory == MAP_FAILED) {
 			perror("mmap");
 			return false;
@@ -584,11 +617,19 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 		memcpy(data,memory,100); 
 		//vert_start=data[0x1B]<<8|data[0x1A];
 		//vert_end=data[0x19]<<8|data[0x18];
-		stride=data[0x15]<<8|data[0x14];	
-		ofs=(data[0x28]<<8|data[0x27])>>4;
-		ofs2=(data[0x2c]<<8|data[0x2b])>>4;
+		stride=data[0x15]<<8|data[0x14];
+		if (stb_type == BRCM7435) {
+			ofs=((data[0x3d]<<8|data[0x3c])&0x3ff)<<4;
+			ofs2=((data[0x41]<<8|data[0x40])&0x3ff)<<4;
+		} else {
+			ofs=((data[0x29]<<8|data[0x28])&0x3ff)<<4;
+			ofs2=((data[0x2d]<<8|data[0x2c])&0x3ff)<<4;
+		}
 		adr=(data[0x1f]<<24|data[0x1e]<<16|data[0x1d]<<8|data[0x1c])&0xFFFFFF00;
-		adr2=(data[0x23]<<24|data[0x22]<<16|data[0x21]<<8|data[0x20])&0xFFFFFF00;
+		if (stb_type == BRCM7435)
+			adr2=(data[0x37]<<24|data[0x36]<<16|data[0x35]<<8|data[0x34])&0xFFFFFF00;
+		else
+			adr2=(data[0x23]<<24|data[0x22]<<16|data[0x21]<<8|data[0x20])&0xFFFFFF00;
 		offset=adr2-adr;
 		
 		munmap(memory, 100);
@@ -611,7 +652,7 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 		assert(chroma);
 
 		// grabbing luma & chroma plane from the decoder memory
-		if (stb_type == BRCM7401 || stb_type == BRCM7405) {
+		if (stb_type == BRCM7401 || stb_type == BRCM7405 || stb_type == BRCM7435) {
 			// on dm800/dm500hd we have direct access to the decoder memory
 			memory = mmap(0, offset + stride*(ofs2+64), PROT_READ, MAP_SHARED, mem_fd, adr);
 			if (memory == MAP_FAILED) {
@@ -678,7 +719,7 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 		unsigned int chr_luma_stride = 0x40;
  		unsigned int sw;
 
-		if (stb_type == BRCM7405)
+		if (stb_type == BRCM7405 || stb_type == BRCM7435)
 			chr_luma_stride *= 2;
 
 		xsub=chr_luma_stride;
@@ -713,7 +754,7 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 			}
 		}
 
-		if (stb_type == BRCM7401 || stb_type == BRCM7405)
+		if (stb_type == BRCM7401 || stb_type == BRCM7405 || stb_type == BRCM7435)
 			munmap(memory, offset + stride * (ofs2 + 64));
 		else if (stb_type == BRCM7400) {
 			memory -= 0x1000;
@@ -843,7 +884,18 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 	printf("... converting Video from YUV to RGB color space\n");
 	out1=pos=t=0;
 	rgbstride=stride*3;
-	
+
+	unsigned int rpos, gpos, bpos;
+	if (byte_order == BGR) {
+		rpos = 0;
+		gpos = 1;
+		bpos = 2;
+	} else {
+		rpos = 2;
+		gpos = 1;
+		bpos = 0;
+	}
+
 	for (y=res; y != 0; y-=2)
 	{
 		for (x=stride; x != 0; x-=2)
@@ -856,40 +908,33 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 			GV=yuv2rgbtable_gv[V];
 			BV=yuv2rgbtable_bv[V];
 			
-			switch (stb_type) //on xilleon we use bgr instead of rgb so simply swap the coeffs
-			{
-				case XILLEON:
-					SWAP(RU,BV);
-					break;
-			}
-
 			// now we do 4 pixels on each iteration this is more code but much faster 
 			Y=yuv2rgbtable_y[luma[pos]]; 
 
-			video[out1]=CLAMP((Y + RU)>>16);
-			video[out1+1]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2]=CLAMP((Y + BV)>>16);
+			video[out1+rpos]=CLAMP((Y + RU)>>16);
+			video[out1+gpos]=CLAMP((Y - GV - GU)>>16);
+			video[out1+bpos]=CLAMP((Y + BV)>>16);
 			
 			Y=yuv2rgbtable_y[luma[stride+pos]];
 
-			video[out1+rgbstride]=CLAMP((Y + RU)>>16);
-			video[out1+1+rgbstride]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2+rgbstride]=CLAMP((Y + BV)>>16);
+			video[out1+rpos+rgbstride]=CLAMP((Y + RU)>>16);
+			video[out1+gpos+rgbstride]=CLAMP((Y - GV - GU)>>16);
+			video[out1+bpos+rgbstride]=CLAMP((Y + BV)>>16);
 
 			pos++;
 			out1+=3;
 			
 			Y=yuv2rgbtable_y[luma[pos]];
 
-			video[out1]=CLAMP((Y + RU)>>16);
-			video[out1+1]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2]=CLAMP((Y + BV)>>16);
+			video[out1+rpos]=CLAMP((Y + RU)>>16);
+			video[out1+gpos]=CLAMP((Y - GV - GU)>>16);
+			video[out1+bpos]=CLAMP((Y + BV)>>16);
 			
 			Y=yuv2rgbtable_y[luma[stride+pos]];
 
-			video[out1+rgbstride]=CLAMP((Y + RU)>>16);
-			video[out1+1+rgbstride]=CLAMP((Y - GV - GU)>>16);
-			video[out1+2+rgbstride]=CLAMP((Y + BV)>>16);
+			video[out1+rpos+rgbstride]=CLAMP((Y + RU)>>16);
+			video[out1+gpos+rgbstride]=CLAMP((Y - GV - GU)>>16);
+			video[out1+bpos+rgbstride]=CLAMP((Y + BV)>>16);
 			
 			out1+=3;
 			pos++;
@@ -914,7 +959,7 @@ static bool getvideo(unsigned char *video, unsigned int *xres, unsigned int *yre
 
 static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres)
 {
-	int fb,pos,pos1,pos2,ofs;
+	int fb,pos1,pos2,ofs;
 	unsigned int x, y;
 	unsigned char *lfb;
 	struct fb_fix_screeninfo fix_screeninfo;
@@ -945,12 +990,15 @@ static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres)
 		return false;
 	}
 
+	if (var_screeninfo.red.offset < var_screeninfo.blue.offset)
+		byte_order = RGB;
+
 	if ( var_screeninfo.bits_per_pixel == 32 ) 
 	{
 		printf("Grabbing 32bit Framebuffer ...\n");
 	
 		// get 32bit framebuffer
-		pos=pos1=pos2=0;
+		pos1=pos2=0;
 		ofs=fix_screeninfo.line_length-(var_screeninfo.xres*4);
 		
 		if (ofs == 0) // we have no offset ? so do it the easy and fast way
@@ -973,7 +1021,7 @@ static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres)
 		unsigned short color;
 		
 		// get 16bit framebuffer
-		pos=pos1=pos2=0;
+		pos1=pos2=0;
 		ofs=fix_screeninfo.line_length-(var_screeninfo.xres*2);		
 		for (y=0; y < var_screeninfo.yres; y+=1)
 		{
@@ -1053,7 +1101,7 @@ static bool getosd(unsigned char *osd, unsigned int *xres, unsigned int *yres)
 		close(mem_fd);
 		
 		// get 8bit framebuffer
-		pos=pos1=pos2=0;
+		pos1=pos2=0;
 		ofs=fix_screeninfo.line_length-(var_screeninfo.xres);		
 		for (y=0; y < var_screeninfo.yres; y+=1)
 		{
