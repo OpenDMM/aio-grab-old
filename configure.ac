@@ -1,7 +1,7 @@
 #                                               -*- Autoconf -*-
 # Process this file with autoconf to produce a configure script.
 
-AC_INIT([grab],[0.90],[enigma2-devel@lists.elitedvb.net])
+AC_INIT([grab],[0.91],[enigma2-devel@lists.elitedvb.net])
 AM_INIT_AUTOMAKE([foreign])
 AC_CONFIG_SRCDIR([main.c])
 AC_CONFIG_HEADERS([grab_config.h])
